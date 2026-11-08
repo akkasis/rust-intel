@@ -116,6 +116,7 @@ export function AppShell() {
               </NavLink>
             ))}
           </nav>
+          {!sidebarCollapsed && info.data && <div className="px-3 pb-1 text-[10px] text-faint num">версия {info.data.version}</div>}
           <button
             type="button"
             onClick={toggleSidebar}

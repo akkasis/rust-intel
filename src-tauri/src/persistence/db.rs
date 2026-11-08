@@ -75,3 +75,60 @@ pub async fn integrity_check(pool: &SqlitePool) -> Result<String, DbError> {
 pub async fn schema_version(pool: &SqlitePool) -> i64 {
     sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations WHERE success = 1").fetch_one(pool).await.unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fnv1a(data: &[u8]) -> u64 {
+        data.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
+    }
+
+    /// Выпущенные миграции нельзя менять: иначе база пользователя не откроется после обновления.
+    /// Новые изменения схемы — только новыми файлами 0003_…, 0004_….
+    #[test]
+    fn released_migrations_are_frozen() {
+        let m1 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/0001_init.sql")).unwrap();
+        assert_eq!(fnv1a(&m1), 0x3792b5b23031bf13, "0001_init.sql изменён — создайте новую миграцию вместо правки");
+    }
+
+    /// Обновление приложения: база предыдущей версии (только миграция 0001) открывается новой версией,
+    /// данные сохраняются, перед миграцией создаётся резервная копия.
+    #[tokio::test]
+    async fn upgrade_from_previous_version_keeps_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_migrations = dir.path().join("old_migrations");
+        std::fs::create_dir_all(&old_migrations).unwrap();
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/0001_init.sql"), old_migrations.join("0001_init.sql")).unwrap();
+        let db = dir.path().join("rid-live.sqlite");
+        {
+            let opts = SqliteConnectOptions::new().filename(&db).create_if_missing(true).foreign_keys(true);
+            let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+            sqlx::migrate::Migrator::new(old_migrations.as_path()).await.unwrap().run(&pool).await.unwrap();
+            sqlx::query("INSERT INTO players(steam_id, persona_name, created_at, updated_at) VALUES ('76561197960287930', 'Old', 'x', 'x')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO squads(name, created_at, updated_at) VALUES ('Клан', 'x', 'x')").execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+        let pool = open(&db).await.unwrap();
+        let name: String = sqlx::query_scalar("SELECT persona_name FROM players").fetch_one(&pool).await.unwrap();
+        assert_eq!(name, "Old");
+        let squads: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM squads").fetch_one(&pool).await.unwrap();
+        assert_eq!(squads, 1);
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player_server_stats").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0, "новая таблица создана");
+        assert_eq!(schema_version(&pool).await, MIGRATOR.iter().map(|m| m.version).max().unwrap());
+        let backups =
+            std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().contains("pre-migration")).count();
+        assert_eq!(backups, 1, "резервная копия перед миграцией");
+        // повторное открытие той же версией — без новых бэкапов
+        pool.close().await;
+        let pool = open(&db).await.unwrap();
+        pool.close().await;
+        let backups2 =
+            std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().contains("pre-migration")).count();
+        assert_eq!(backups2, 1);
+    }
+}
