@@ -3,7 +3,7 @@
 use super::to_bounds;
 use crate::domain::analytics::co_sessions;
 use crate::domain::bans::{BanKind, BanRecord, RiskInput, RiskSummary, compute_risk};
-use crate::domain::ids::{ParsedInput, SteamId64, parse_input};
+use crate::domain::ids::{BattleMetricsPlayerId, ParsedInput, SteamId64, parse_input};
 use crate::domain::provenance::{DataStatus, Provenance};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::clock::{fmt_ts, now, parse_ts};
@@ -238,35 +238,149 @@ pub async fn refresh_player(ctx: &Ctx, id: &SteamId64, notices: &mut Vec<Notice>
         }
         Err(e) => notices.push(Notice { level: "warning", text: format!("Часы в Rust: {e}") }),
     }
-    // BattleMetrics: привязка только по точному steamID.
+    // BattleMetrics: уже привязан — обновляем; нет — пробуем точное совпадение по steamID.
     if ctx.bm.is_configured() {
-        match ctx.bm.match_steam_id(id).await {
-            Ok(Some(bm)) => {
-                repo::upsert_link(
-                    &ctx.pool,
-                    &ProviderLinkRow {
-                        steam_id: sid.into(),
-                        provider: "battlemetrics".into(),
-                        external_id: bm.0.clone(),
-                        match_evidence: "exact_identifier".into(),
-                        confidence: "high".into(),
-                        source_url: Some(format!("https://www.battlemetrics.com/players/{}", bm.0)),
-                        linked_at: fmt_ts(t),
-                    },
-                )
-                .await?;
-                import_bm_sessions(ctx, id, &bm, notices).await?;
-            }
-            Ok(None) => notices.push(Notice {
-                level: "info", text: "BattleMetrics: точного совпадения по steamID нет — сессии не привязаны.".into()
-            }),
-            Err(e) => {
-                record_err(ctx, "battlemetrics", &e).await;
-                notices.push(Notice { level: "warning", text: format!("BattleMetrics: {e}") });
-            }
+        let existing = repo::list_links(&ctx.pool, sid).await?.into_iter().find(|l| l.provider == "battlemetrics");
+        match existing {
+            Some(l) => sync_bm(ctx, id, &BattleMetricsPlayerId(l.external_id), notices).await?,
+            None => match ctx.bm.match_steam_id(id).await {
+                Ok(Some(bm)) => {
+                    save_bm_link(ctx, sid, &bm, "exact_identifier").await?;
+                    notices.push(Notice { level: "info", text: format!("BattleMetrics: найден игрок {} по SteamID", bm.0) });
+                    sync_bm(ctx, id, &bm, notices).await?;
+                }
+                Ok(None) => notices.push(Notice {
+                    level: "warning",
+                    text: "BattleMetrics не раскрывает SteamID обычным токенам, поэтому игрок не найден автоматически. Нажмите «Привязать BattleMetrics» в карточке и выберите игрока по нику или вставьте ссылку на его страницу BattleMetrics.".into(),
+                }),
+                Err(e) => {
+                    record_err(ctx, "battlemetrics", &e).await;
+                    notices.push(Notice { level: "warning", text: format!("BattleMetrics: {e}. Можно привязать игрока вручную в карточке.") });
+                }
+            },
         }
     }
     Ok(())
+}
+
+async fn save_bm_link(ctx: &Ctx, sid: &str, bm: &BattleMetricsPlayerId, evidence: &str) -> AppResult<()> {
+    repo::upsert_link(
+        &ctx.pool,
+        &ProviderLinkRow {
+            steam_id: sid.into(),
+            provider: "battlemetrics".into(),
+            external_id: bm.0.clone(),
+            match_evidence: evidence.into(),
+            confidence: if evidence == "exact_identifier" { "high".into() } else { "medium".into() },
+            source_url: Some(format!("https://www.battlemetrics.com/players/{}", bm.0)),
+            linked_at: fmt_ts(now()),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Загружает из BattleMetrics серверы игрока (онлайн, время, первый/последний раз), ники и сессии.
+pub async fn sync_bm(ctx: &Ctx, id: &SteamId64, bm: &BattleMetricsPlayerId, notices: &mut Vec<Notice>) -> AppResult<()> {
+    let sid = id.as_str();
+    let t = now();
+    match ctx.bm.player_info(bm).await {
+        Ok(info) => {
+            repo::record_health_ok(&ctx.pool, "battlemetrics").await?;
+            for n in info.names.iter().chain(info.name.iter()) {
+                repo::record_alias(&ctx.pool, sid, n, "battlemetrics", t).await?;
+            }
+            for st in &info.servers {
+                let existing = repo::get_server(&ctx.pool, &st.server_id).await?;
+                repo::upsert_server(
+                    &ctx.pool,
+                    &ServerRow {
+                        id: st.server_id.clone(),
+                        provider: "battlemetrics".into(),
+                        external_id: st.server_id.trim_start_matches("battlemetrics:").into(),
+                        name: st.server_name.clone(),
+                        address: st.address.clone(),
+                        country: st.country.clone(),
+                        map: existing.as_ref().and_then(|e| e.map.clone()),
+                        players: st.players,
+                        max_players: st.max_players,
+                        queue: None,
+                        online: Some(true),
+                        trust: None,
+                        last_wipe_at: None,
+                        next_wipe_at: None,
+                        followed: existing.as_ref().is_some_and(|e| e.followed),
+                        source_url: Some(format!("https://www.battlemetrics.com/servers/rust/{}", st.server_id.trim_start_matches("battlemetrics:"))),
+                        fetched_at: fmt_ts(t),
+                        is_demo: false,
+                    },
+                )
+                .await?;
+                repo::upsert_server_stat(&ctx.pool, sid, st, "battlemetrics", t).await?;
+            }
+            notices.push(Notice { level: "info", text: format!("BattleMetrics: серверов игрока: {}", info.servers.len()) });
+        }
+        Err(e) => {
+            record_err(ctx, "battlemetrics", &e).await;
+            notices.push(Notice { level: "error", text: format!("BattleMetrics, профиль игрока: {e}") });
+            return Ok(());
+        }
+    }
+    import_bm_sessions(ctx, id, bm, notices).await
+}
+
+/// Ручная привязка игрока BattleMetrics (по ID или ссылке) к профилю Steam.
+pub async fn link_bm(ctx: &Ctx, steam_id: &str, input: &str) -> AppResult<Vec<Notice>> {
+    if ctx.is_demo() {
+        return Err(AppError::validation("В демо-режиме BattleMetrics не используется"));
+    }
+    let id = SteamId64::parse(steam_id)?;
+    ensure_known_player(ctx, steam_id).await?;
+    let bm = crate::providers::battlemetrics::parse_player_id(input)
+        .ok_or_else(|| AppError::validation("Нужен ID игрока BattleMetrics или ссылка вида battlemetrics.com/players/123456"))?;
+    let info = ctx.bm.player_info(&bm).await.map_err(|e| AppError::provider("battlemetrics", e))?;
+    let evidence = match &info.steam_id {
+        Some(s) if s != steam_id => {
+            return Err(AppError::validation(format!("Этот игрок BattleMetrics принадлежит другому SteamID ({s}). Привязка отклонена.")));
+        }
+        Some(_) => "exact_identifier",
+        None => "user_confirmed",
+    };
+    if let Some(other) =
+        sqlx::query_scalar::<_, String>("SELECT steam_id FROM provider_links WHERE provider = 'battlemetrics' AND external_id = ? AND steam_id != ?")
+            .bind(&bm.0)
+            .bind(steam_id)
+            .fetch_optional(&ctx.pool)
+            .await?
+    {
+        return Err(AppError::validation(format!("Этот игрок BattleMetrics уже привязан к профилю {other}. Сначала отвяжите его там.")));
+    }
+    save_bm_link(ctx, steam_id, &bm, evidence).await?;
+    let mut notices =
+        vec![Notice { level: "info", text: format!("Привязан игрок BattleMetrics «{}» ({})", info.name.clone().unwrap_or_default(), bm.0) }];
+    sync_bm(ctx, &id, &bm, &mut notices).await?;
+    Ok(notices)
+}
+
+pub async fn unlink_bm(ctx: &Ctx, steam_id: &str) -> AppResult<()> {
+    SteamId64::parse(steam_id)?;
+    sqlx::query("DELETE FROM provider_links WHERE steam_id = ? AND provider = 'battlemetrics'").bind(steam_id).execute(&ctx.pool).await?;
+    sqlx::query("DELETE FROM player_server_stats WHERE steam_id = ? AND provider = 'battlemetrics'").bind(steam_id).execute(&ctx.pool).await?;
+    sqlx::query("DELETE FROM sessions WHERE steam_id = ? AND provider = 'battlemetrics'").bind(steam_id).execute(&ctx.pool).await?;
+    sqlx::query("DELETE FROM coverage_windows WHERE steam_id = ? AND provider = 'battlemetrics'").bind(steam_id).execute(&ctx.pool).await?;
+    Ok(())
+}
+
+pub async fn search_bm(ctx: &Ctx, name: &str) -> AppResult<Vec<SearchCandidate>> {
+    if ctx.is_demo() {
+        return Err(AppError::validation("В демо-режиме BattleMetrics не используется"));
+    }
+    let name = name.trim();
+    if name.chars().count() < 2 || name.len() > 64 {
+        return Err(AppError::validation("Ник: от 2 до 64 символов"));
+    }
+    let list = ctx.bm.search_by_name(name).await.map_err(|e| AppError::provider("battlemetrics", e))?;
+    Ok(list.into_iter().map(bm_candidate).collect())
 }
 
 async fn import_bm_sessions(ctx: &Ctx, id: &SteamId64, bm: &crate::domain::ids::BattleMetricsPlayerId, notices: &mut Vec<Notice>) -> AppResult<()> {
@@ -416,6 +530,7 @@ pub struct PlayerProfile {
     pub last_session_at: Option<String>,
     pub last_seen: Option<LastSeen>,
     pub servers: Vec<ObservedServer>,
+    pub server_stats: Vec<ServerStatRow>,
     pub recent_sessions: Vec<SessionRow>,
     pub squads: Vec<SquadRow>,
     pub tracked: Option<TrackedRow>,
@@ -507,7 +622,8 @@ pub async fn get_profile(ctx: &Ctx, steam_id: &str) -> AppResult<PlayerProfile> 
     }
     let mut servers: Vec<ObservedServer> = servers.into_values().collect();
     servers.sort_by(|a, b| b.last_at.cmp(&a.last_at));
-    let last_seen = all_sessions.first().map(|s| LastSeen {
+    let server_stats = repo::list_server_stats(&ctx.pool, steam_id).await?;
+    let mut last_seen = all_sessions.first().map(|s| LastSeen {
         at: s.end_lower.clone(),
         scope: if s.server_id.is_some() { "observed_server".into() } else { "steam_in_game".into() },
         provider: s.provider.clone(),
@@ -516,8 +632,24 @@ pub async fn get_profile(ctx: &Ctx, steam_id: &str) -> AppResult<PlayerProfile> 
         open: s.is_open,
         approximate: s.kind == "inferred_from_polls",
     });
+    // Статистика BattleMetrics по серверам может быть свежее сессий.
+    if let Some(st) = server_stats.iter().filter(|x| x.last_seen.is_some()).max_by(|a, b| (a.online, &a.last_seen).cmp(&(b.online, &b.last_seen)))
+        && (st.online || last_seen.as_ref().is_none_or(|l| st.last_seen.as_deref().unwrap_or("") > l.at.as_str()))
+    {
+        last_seen = Some(LastSeen {
+            at: st.last_seen.clone().unwrap_or_default(),
+            scope: "observed_server".into(),
+            provider: st.provider.clone(),
+            server_id: Some(st.server_id.clone()),
+            server_name: st.server_name.clone(),
+            open: st.online,
+            approximate: false,
+        });
+    }
     let sessions_status = if player.is_demo {
         DataStatus::Demo
+    } else if total > 0 && links.iter().any(|l| l.provider == "battlemetrics") {
+        DataStatus::Verified
     } else if total > 0 {
         DataStatus::Partial
     } else if links.iter().any(|l| l.provider == "battlemetrics") {
@@ -556,6 +688,7 @@ pub async fn get_profile(ctx: &Ctx, steam_id: &str) -> AppResult<PlayerProfile> 
         last_session_at: last,
         last_seen,
         servers,
+        server_stats,
         recent_sessions: all_sessions.into_iter().take(25).collect(),
         squads,
         tracked,

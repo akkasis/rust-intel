@@ -36,10 +36,100 @@ pub fn server_key(id: &str) -> String {
 pub fn parse_match(body: &Value, steam_id: &SteamId64) -> Option<BattleMetricsPlayerId> {
     body["data"].as_array()?.iter().find_map(|d| {
         let a = &d["attributes"];
-        (a["type"] == "steamID" && a["identifier"].as_str() == Some(steam_id.as_str()))
+        let type_ok = a["type"].is_null() || a["type"] == "steamID";
+        (type_ok && a["identifier"].as_str() == Some(steam_id.as_str()))
             .then(|| d["relationships"]["player"]["data"]["id"].as_str().map(|s| BattleMetricsPlayerId(s.to_string())))
             .flatten()
     })
+}
+
+/// ID игрока BattleMetrics из ввода: число или ссылка `battlemetrics.com/players/123456`.
+pub fn parse_player_id(input: &str) -> Option<BattleMetricsPlayerId> {
+    let t = input.trim().trim_end_matches('/');
+    if !t.is_empty() && t.len() <= 15 && t.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(BattleMetricsPlayerId(t.to_string()));
+    }
+    let url = url::Url::parse(if t.starts_with("http") { t.to_string() } else { format!("https://{t}") }.as_str()).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    if host != "www.battlemetrics.com" && host != "battlemetrics.com" {
+        return None;
+    }
+    let segs: Vec<&str> = url.path_segments()?.filter(|x| !x.is_empty()).collect();
+    match segs.as_slice() {
+        ["players", id, ..] | ["rcon", "players", id, ..] if id.len() <= 15 && id.bytes().all(|b| b.is_ascii_digit()) => {
+            Some(BattleMetricsPlayerId((*id).to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Статистика игрока на сервере из `GET /players/{id}?include=server` (included[].meta).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BmServerStat {
+    pub server_id: String,
+    pub server_name: String,
+    pub address: Option<String>,
+    pub online: bool,
+    pub first_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub time_played_secs: Option<i64>,
+    pub players: Option<i64>,
+    pub max_players: Option<i64>,
+    pub country: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BmPlayerInfo {
+    pub id: BattleMetricsPlayerId,
+    pub name: Option<String>,
+    /// SteamID, только если токен имеет доступ к идентификаторам (RCON) — иначе None.
+    pub steam_id: Option<String>,
+    pub names: Vec<String>,
+    pub servers: Vec<BmServerStat>,
+}
+
+pub fn parse_player_info(body: &Value) -> Option<BmPlayerInfo> {
+    let d = &body["data"];
+    let id = d["id"].as_str()?.to_string();
+    let mut steam_id = None;
+    let mut names = Vec::new();
+    let mut servers = Vec::new();
+    for i in body["included"].as_array().map(|v| v.as_slice()).unwrap_or(&[]) {
+        match i["type"].as_str() {
+            Some("identifier") => match i["attributes"]["type"].as_str() {
+                Some("steamID") => steam_id = i["attributes"]["identifier"].as_str().map(str::to_string),
+                Some("name") => {
+                    if let Some(n) = i["attributes"]["identifier"].as_str() {
+                        names.push(sanitize_text(n, 64));
+                    }
+                }
+                _ => {}
+            },
+            Some("server") => {
+                let Some(sid) = i["id"].as_str() else { continue };
+                let a = &i["attributes"];
+                let m = &i["meta"];
+                servers.push(BmServerStat {
+                    server_id: server_key(sid),
+                    server_name: sanitize_text(a["name"].as_str().unwrap_or("?"), 120),
+                    address: match (a["ip"].as_str(), a["port"].as_i64()) {
+                        (Some(ip), Some(p)) => Some(format!("{ip}:{p}")),
+                        _ => None,
+                    },
+                    online: m["online"].as_bool().unwrap_or(false),
+                    first_seen: ts(&m["firstSeen"]),
+                    last_seen: ts(&m["lastSeen"]),
+                    time_played_secs: m["timePlayed"].as_i64(),
+                    players: a["players"].as_i64(),
+                    max_players: a["maxPlayers"].as_i64(),
+                    country: a["country"].as_str().map(|c| sanitize_text(c, 4)),
+                });
+            }
+            _ => {}
+        }
+    }
+    servers.sort_by_key(|s| std::cmp::Reverse(s.last_seen));
+    Some(BmPlayerInfo { id: BattleMetricsPlayerId(id), name: d["attributes"]["name"].as_str().map(|n| sanitize_text(n, 64)), steam_id, names, servers })
 }
 
 pub fn parse_sessions(body: &Value) -> Vec<ProviderSession> {
@@ -150,17 +240,36 @@ impl BattleMetricsProvider {
     pub async fn match_steam_id(&self, steam_id: &SteamId64) -> Result<Option<BattleMetricsPlayerId>, ProviderError> {
         let t = self.token()?;
         let body = json!({"data": [{"type": "identifier", "attributes": {"type": "steamID", "identifier": steam_id.as_str()}}]});
-        let v: Value = self.http.post_json("battlemetrics", Self::url("/players/match", &[])?, Some(&t), &body).await?;
-        Ok(parse_match(&v, steam_id))
+        // quick-match доступен обычным токенам; match — организациям с RCON.
+        let quick = self.http.post_json::<Value>("battlemetrics", Self::url("/players/quick-match", &[("page[size]", "5")])?, Some(&t), &body).await;
+        if let Ok(v) = &quick
+            && let Some(id) = parse_match(v, steam_id)
+        {
+            return Ok(Some(id));
+        }
+        match self.http.post_json::<Value>("battlemetrics", Self::url("/players/match", &[])?, Some(&t), &body).await {
+            Ok(v) => Ok(parse_match(&v, steam_id)),
+            Err(e) => match quick {
+                Ok(_) => Ok(None),
+                Err(q) => Err(if matches!(e, ProviderError::Forbidden { .. }) { q } else { e }),
+            },
+        }
     }
     pub async fn search_by_name(&self, name: &str) -> Result<Vec<NameCandidate>, ProviderError> {
         let t = self.token()?;
-        let v: Value = self
-            .http
-            .get_json("battlemetrics", Self::url("/players", &[("filter[search]", name), ("filter[server][game]", "rust"), ("page[size]", "10")])?, Some(&t))
-            .await?;
+        let v: Value = self.http.get_json("battlemetrics", Self::url("/players", &[("filter[search]", name), ("page[size]", "15")])?, Some(&t)).await?;
         Ok(parse_player_search(&v))
     }
+    pub async fn player_info(&self, player: &BattleMetricsPlayerId) -> Result<BmPlayerInfo, ProviderError> {
+        let t = self.token()?;
+        if !player.0.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ProviderError::InvalidData { detail: "некорректный player id".into() });
+        }
+        let v: Value =
+            self.http.get_json("battlemetrics", Self::url(&format!("/players/{}", player.0), &[("include", "server,identifier")])?, Some(&t)).await?;
+        parse_player_info(&v).ok_or_else(|| ProviderError::InvalidData { detail: "пустой ответ /players/{id}".into() })
+    }
+
     pub async fn sessions(&self, player: &BattleMetricsPlayerId) -> Result<Vec<ProviderSession>, ProviderError> {
         let t = self.token()?;
         let path = format!("/players/{}/relationships/sessions", player.0);
@@ -193,14 +302,14 @@ impl PresenceSource for BmPresence {
                 out.push(Presence { steam_id: id.clone(), state: PresenceState::Unknown, server_id: None, server_name: None, persona_name: None });
                 continue;
             };
-            let s = self.provider.sessions(bm).await?;
-            let open = s.iter().find(|x| x.stop.is_none());
+            let info = self.provider.player_info(bm).await?;
+            let on = info.servers.iter().find(|x| x.online);
             out.push(Presence {
                 steam_id: id.clone(),
-                state: if open.is_some() { PresenceState::Online } else { PresenceState::Offline },
-                server_id: open.and_then(|o| o.server_id.clone()),
-                server_name: open.and_then(|o| o.server_name.clone()),
-                persona_name: s.first().and_then(|x| x.player_name.clone()),
+                state: if on.is_some() { PresenceState::Online } else { PresenceState::Offline },
+                server_id: on.map(|o| o.server_id.clone()),
+                server_name: on.map(|o| o.server_name.clone()),
+                persona_name: None,
             });
         }
         Ok(out)
@@ -259,6 +368,29 @@ mod tests {
         let other = SteamId64::parse("76561197960287931").unwrap();
         assert_eq!(parse_match(&v, &ok), Some(BattleMetricsPlayerId("900001".into())));
         assert_eq!(parse_match(&v, &other), None, "никаких нечётких сопоставлений");
+    }
+    #[test]
+    fn parses_player_id_input() {
+        assert_eq!(parse_player_id("123456").unwrap().0, "123456");
+        assert_eq!(parse_player_id("https://www.battlemetrics.com/players/987654321").unwrap().0, "987654321");
+        assert_eq!(parse_player_id("battlemetrics.com/players/42/").unwrap().0, "42");
+        assert!(parse_player_id("https://evil.example/players/1").is_none());
+        assert!(parse_player_id("abc").is_none());
+    }
+    #[test]
+    fn contract_player_info_servers_meta() {
+        let v = fx("player_info.json");
+        let i = parse_player_info(&v).unwrap();
+        assert_eq!(i.id.0, "900001");
+        assert_eq!(i.steam_id, None, "без RCON-доступа SteamID не раскрывается");
+        assert_eq!(i.servers.len(), 2);
+        assert!(i.servers.iter().any(|s| s.online && s.server_id == "battlemetrics:1000002"));
+        assert_eq!(i.servers.iter().find(|s| s.server_id == "battlemetrics:1000001").unwrap().time_played_secs, Some(36000));
+    }
+    #[test]
+    fn quick_match_without_type_field() {
+        let v = serde_json::json!({"data":[{"type":"identifier","attributes":{"identifier":"76561197960287930","lastSeen":"2026-11-01T00:00:00Z"},"relationships":{"player":{"data":{"type":"player","id":"777"}}}}]});
+        assert_eq!(parse_match(&v, &SteamId64::parse("76561197960287930").unwrap()).unwrap().0, "777");
     }
     #[test]
     fn name_search_never_assigns_steam_id() {

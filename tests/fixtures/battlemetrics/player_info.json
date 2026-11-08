@@ -1,0 +1,7 @@
+{"data":{"type":"player","id":"900001","attributes":{"name":"Sanitized","private":false,"createdAt":"2020-01-01T00:00:00.000Z","updatedAt":"2026-11-02T19:00:00.000Z"}},
+ "included":[
+  {"type":"server","id":"1000001","attributes":{"name":"Sanitized Server A","ip":"203.0.113.10","port":28015,"players":120,"maxPlayers":200,"country":"DE","status":"online"},
+   "meta":{"timePlayed":36000,"firstSeen":"2026-09-01T10:00:00.000Z","lastSeen":"2026-11-01T21:30:00.000Z","online":false}},
+  {"type":"server","id":"1000002","attributes":{"name":"Sanitized Server B","ip":"203.0.113.11","port":28015,"players":50,"maxPlayers":100,"country":"RU","status":"online"},
+   "meta":{"timePlayed":7200,"firstSeen":"2026-11-02T19:00:00.000Z","lastSeen":"2026-11-08T19:00:00.000Z","online":true}}
+ ]}

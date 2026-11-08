@@ -191,3 +191,15 @@ pub struct SearchHistoryRow {
     pub steam_id: Option<String>,
     pub searched_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ServerStatRow {
+    pub server_id: String,
+    pub provider: String,
+    pub server_name: Option<String>,
+    pub online: bool,
+    pub first_seen: Option<String>,
+    pub last_seen: Option<String>,
+    pub time_played_secs: Option<i64>,
+    pub fetched_at: String,
+}

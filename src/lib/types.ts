@@ -197,6 +197,17 @@ export interface ObservedServer {
   last_at: Iso;
 }
 
+export interface ServerStat {
+  server_id: string;
+  provider: string;
+  server_name: string | null;
+  online: boolean;
+  first_seen: Iso | null;
+  last_seen: Iso | null;
+  time_played_secs: number | null;
+  fetched_at: Iso;
+}
+
 export interface Connection {
   steam_id: SteamId;
   persona_name: string | null;
@@ -221,6 +232,7 @@ export interface PlayerProfile {
   last_session_at: Iso | null;
   last_seen: LastSeen | null;
   servers: ObservedServer[];
+  server_stats: ServerStat[];
   recent_sessions: Session[];
   squads: Squad[];
   tracked: TrackedPlayer | null;

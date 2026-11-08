@@ -29,6 +29,7 @@ import {
 } from "@/components/ui";
 import { ActivityView } from "@/features/activity/ActivityView";
 import { RiskPanel } from "@/features/bans/RiskPanel";
+import { BattleMetricsCard } from "./BattleMetricsCard";
 
 type Tab = "overview" | "activity" | "servers" | "bans" | "combat" | "connections";
 
@@ -248,6 +249,7 @@ function Overview({ p }: { p: PlayerProfile }) {
         </Card>
       </div>
       <div className="space-y-4">
+        <BattleMetricsCard p={p} />
         <Card>
           <CardHeader title="История ников" subtitle="С датами и источником" />
           {p.aliases.length === 0 ? (
@@ -334,10 +336,39 @@ function Fact({ label, value, extra }: { label: string; value: string; extra?: R
 function Servers({ p }: { p: PlayerProfile }) {
   const tz = useTz();
   return (
+    <div className="space-y-4">
+      {p.server_stats.length > 0 && (
+        <Card>
+          <CardHeader title="Серверы по данным BattleMetrics" subtitle="Где игрок играл, сколько времени и когда последний раз" />
+          <table className="w-full text-[13px]">
+            <thead className="text-left text-[11px] tracking-wide text-faint uppercase">
+              <tr>
+                <th className="px-4 py-2 font-medium">Сервер</th>
+                <th className="px-2 py-2 font-medium">Сейчас</th>
+                <th className="px-2 py-2 text-right font-medium">Наиграно</th>
+                <th className="px-2 py-2 font-medium">Первый раз</th>
+                <th className="px-4 py-2 font-medium">Последний раз</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {p.server_stats.map((s) => (
+                <tr key={s.server_id} className="hover:bg-raised">
+                  <td className="max-w-[320px] truncate px-4 py-2">{s.server_name ?? s.server_id}</td>
+                  <td className="px-2 py-2">{s.online ? <Badge tone="lime">онлайн</Badge> : <span className="text-faint">—</span>}</td>
+                  <td className="px-2 py-2 text-right num">{s.time_played_secs !== null ? fmtDuration(s.time_played_secs) : "—"}</td>
+                  <td className="px-2 py-2 text-muted num">{fmtDateTime(s.first_seen, tz)}</td>
+                  <td className="px-4 py-2 text-muted num">{fmtDateTime(s.last_seen, tz)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="border-t border-line px-4 py-2 text-[11px] text-faint">Обновлено {fmtRelative(p.server_stats[0]!.fetched_at)} · кнопка «Загрузить данные» в блоке BattleMetrics на вкладке «Обзор»</div>
+        </Card>
+      )}
     <Card>
       <CardHeader title="Наблюдаемые серверы" subtitle="Только серверы, где источник видел игрока. Это не полный список." />
       {p.servers.length === 0 ? (
-        <EmptyState title="Нет наблюдений на серверах" text="Steam сообщает лишь «в Rust», без сервера. Серверные сессии дают BattleMetrics (с подпиской) или собственный трекер по источнику присутствия." />
+        <EmptyState title="Нет наблюдаемых сессий на серверах" text="Steam сообщает лишь «в Rust», без сервера. Привяжите игрока BattleMetrics (вкладка «Обзор») — появятся его серверы и сессии." />
       ) : (
         <table className="w-full text-[13px]">
           <thead className="text-left text-[11px] tracking-wide text-faint uppercase">
@@ -361,6 +392,7 @@ function Servers({ p }: { p: PlayerProfile }) {
         </table>
       )}
     </Card>
+    </div>
   );
 }
 

@@ -818,6 +818,44 @@ pub async fn table_counts(pool: &SqlitePool) -> R<Vec<(String, i64)>> {
     Ok(out)
 }
 
+pub async fn upsert_server_stat(
+    pool: &SqlitePool,
+    steam_id: &str,
+    st: &crate::providers::battlemetrics::BmServerStat,
+    provider: &str,
+    at: DateTime<Utc>,
+) -> R<()> {
+    sqlx::query(
+        "INSERT INTO player_server_stats(steam_id, server_id, provider, server_name, online, first_seen, last_seen, time_played_secs, fetched_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(steam_id, server_id) DO UPDATE SET server_name = excluded.server_name, online = excluded.online,
+            first_seen = COALESCE(excluded.first_seen, player_server_stats.first_seen), last_seen = COALESCE(excluded.last_seen, player_server_stats.last_seen),
+            time_played_secs = COALESCE(excluded.time_played_secs, player_server_stats.time_played_secs), fetched_at = excluded.fetched_at",
+    )
+    .bind(steam_id)
+    .bind(&st.server_id)
+    .bind(provider)
+    .bind(&st.server_name)
+    .bind(st.online)
+    .bind(st.first_seen.map(fmt_ts))
+    .bind(st.last_seen.map(fmt_ts))
+    .bind(st.time_played_secs)
+    .bind(fmt_ts(at))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_server_stats(pool: &SqlitePool, steam_id: &str) -> R<Vec<ServerStatRow>> {
+    sqlx::query_as(
+        "SELECT server_id, provider, server_name, online, first_seen, last_seen, time_played_secs, fetched_at
+         FROM player_server_stats WHERE steam_id = ? ORDER BY online DESC, last_seen DESC",
+    )
+    .bind(steam_id)
+    .fetch_all(pool)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

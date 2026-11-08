@@ -133,6 +133,26 @@ pub async fn refresh_player(state: St<'_>, steam_id: String) -> AppResult<Vec<pl
 }
 
 #[tauri::command]
+pub async fn search_battlemetrics(state: St<'_>, name: String) -> AppResult<Vec<player_service::SearchCandidate>> {
+    player_service::search_bm(&state.ctx().await?, &name).await
+}
+
+#[tauri::command]
+pub async fn link_battlemetrics(state: St<'_>, steam_id: String, input: String) -> AppResult<Vec<player_service::Notice>> {
+    if input.len() > 200 {
+        return Err(AppError::validation("Слишком длинный ввод"));
+    }
+    let r = player_service::link_bm(&state.ctx().await?, &steam_id, &input).await;
+    state.tracker_wake.notify_one();
+    r
+}
+
+#[tauri::command]
+pub async fn unlink_battlemetrics(state: St<'_>, steam_id: String) -> AppResult<()> {
+    player_service::unlink_bm(&state.ctx().await?, &steam_id).await
+}
+
+#[tauri::command]
 pub async fn set_favorite(state: St<'_>, steam_id: String, favorite: bool) -> AppResult<()> {
     let c = state.ctx().await?;
     player_service::ensure_known_player(&c, &steam_id).await?;

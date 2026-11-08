@@ -128,6 +128,9 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
       };
     case "poll_now":
       return 0;
+    case "search_battlemetrics":
+    case "link_battlemetrics":
+      throw { kind: "validation", message: "В демо-режиме BattleMetrics не используется" };
     case "test_integration":
     case "set_secret":
       throw { kind: "validation", message: "Интеграции доступны только в настольном приложении" };
