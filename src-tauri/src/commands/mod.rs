@@ -40,6 +40,7 @@ pub struct AppInfo {
 
 #[tauri::command]
 pub async fn get_app_info(state: St<'_>) -> AppResult<AppInfo> {
+    tracing::info!("интерфейс подключён к ядру (get_app_info)");
     let cfg = state.config().await;
     let schema_version = match state.ctx().await {
         Ok(c) => db::schema_version(&c.pool).await,

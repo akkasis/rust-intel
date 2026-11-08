@@ -68,10 +68,15 @@ jobs:
         run: |
           $exe = Get-ChildItem src-tauri/target/release -Filter "rust-intel-desktop.exe" | Select-Object -First 1
           if (-not $exe) { throw "exe не найден" }
-          $p = Start-Process $exe.FullName -PassThru
-          Start-Sleep -Seconds 12
+          $p = Start-Process $exe.FullName -PassThru -RedirectStandardOutput smoke-out.log -RedirectStandardError smoke-err.log
+          Start-Sleep -Seconds 15
           if ($p.HasExited) { throw "Приложение завершилось с кодом $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
+          Start-Sleep -Seconds 1
+          $log = (Get-Content smoke-out.log, smoke-err.log -Raw -ErrorAction SilentlyContinue) -join ""
+          Write-Host $log
+          if ($log -match "get_app_info") { Write-Host "UI загрузился и подключился к ядру" }
+          else { Write-Host "::warning::Не удалось подтвердить загрузку интерфейса по логу" }
       - name: Prepare portable exe
         shell: pwsh
         run: |

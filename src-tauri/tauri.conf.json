@@ -35,8 +35,7 @@
         "base-uri": "'none'",
         "frame-ancestors": "'none'",
         "form-action": "'none'"
-      },
-      "freezePrototype": true
+      }
     }
   },
   "bundle": {
