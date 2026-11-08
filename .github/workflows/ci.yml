@@ -94,6 +94,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>$null
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh release view latest *> $null
+          if ($LASTEXITCODE -eq 0) { gh release delete latest --yes --cleanup-tag }
           $notes = "Сборка из коммита $env:GITHUB_SHA.`n`nRustIntelligence.exe — портативная версия: скачать и запустить, установка не нужна (нужен WebView2, он есть в Windows 10/11).`nRustIntelligence-setup.exe — установщик (ярлыки, удаление через «Приложения»)."
           gh release create latest out/RustIntelligence.exe out/RustIntelligence-setup.exe --title "Rust Intelligence Desktop (последняя сборка)" --notes $notes --target $env:GITHUB_SHA
