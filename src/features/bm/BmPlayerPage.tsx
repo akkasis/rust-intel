@@ -226,7 +226,7 @@ function Teammates({ v }: { v: BmPlayerView }) {
     onError: (e) => toast.error(e.message),
   });
   const [open, setOpen] = useState<string | null>(null);
-  const [minConf, setMinConf] = useState<"all" | "medium">("all");
+  const [minConf, setMinConf] = useState<"all" | "medium">("medium");
   const list = v.teammates.filter((t) => minConf === "all" || t.confidence !== "low");
   return (
     <Card>
@@ -239,7 +239,7 @@ function Teammates({ v }: { v: BmPlayerView }) {
             <Button size="sm" onClick={() => mkClan.mutate()} loading={mkClan.isPending} disabled={!v.teammates.some((t) => t.confidence !== "low")} title="Игрок + тиммейты со средней/высокой уверенностью">
               <UsersRound className="size-3.5" /> Собрать клан
             </Button>
-            <Segmented label="Уверенность" value={minConf} onChange={setMinConf} options={[{ value: "all", label: "Все" }, { value: "medium", label: "Средняя+" }]} />
+            <Segmented label="Уверенность" value={minConf} onChange={setMinConf} options={[{ value: "medium", label: "Надёжные" }, { value: "all", label: "Все, вкл. слабые" }]} />
           </>
         }
       />
@@ -274,6 +274,11 @@ function Teammates({ v }: { v: BmPlayerView }) {
                     <Link to={`/bm/${t.player}`} className="font-medium hover:text-teal" onClick={(e) => e.stopPropagation()}>
                       {t.name ?? t.player}
                     </Link>
+                    {t.steam_friend && (
+                      <Badge tone="teal" className="ml-1.5" title={t.steam_friend.by === "link" ? "Друг в Steam (точно)" : "Друг в Steam: совпал ник на общем сервере"}>
+                        друг Steam
+                      </Badge>
+                    )}
                     {t.tracked && <Badge tone="teal" className="ml-1.5">отслеживается</Badge>}
                   </td>
                   <td className="px-2 py-2 text-right num">{t.joined_together}</td>

@@ -76,6 +76,8 @@ pub struct PlayerSummary {
     /// Some(true) — Steam сообщает, что запущен Rust; None — неизвестно (закрытый профиль).
     pub in_rust: Option<bool>,
     pub persona_state: Option<i64>,
+    /// IP:порт сервера, на котором игрок сейчас (только если Steam его раскрывает).
+    pub game_server_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -99,6 +101,8 @@ impl PresenceState {
 #[derive(Debug, Clone, Serialize)]
 pub struct Presence {
     pub steam_id: SteamId64,
+    /// ip:port сервера из Steam (если раскрыт).
+    pub game_server_ip: Option<String>,
     pub state: PresenceState,
     /// Ключ сервера в БД (`provider:external_id`), если источник знает сервер.
     pub server_id: Option<String>,

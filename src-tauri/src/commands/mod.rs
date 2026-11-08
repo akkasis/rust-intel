@@ -261,6 +261,27 @@ pub async fn get_server_insights(state: St<'_>, id: String, days: Option<i64>) -
 }
 
 #[tauri::command]
+pub async fn get_bm_link_candidates(state: St<'_>, steam_id: String) -> AppResult<Vec<crate::services::linking::LinkCandidate>> {
+    let c = state.ctx().await?;
+    if c.is_demo() || !c.bm.is_configured() {
+        return Err(AppError::validation("Нужен токен BattleMetrics.com (режим Live)"));
+    }
+    SteamId64::parse(&steam_id)?;
+    crate::services::linking::link_candidates(&c, &steam_id, 6).await
+}
+
+#[tauri::command]
+pub async fn get_steam_friends(state: St<'_>, steam_id: String, refresh: Option<bool>) -> AppResult<Vec<crate::services::linking::FriendRow>> {
+    let c = state.ctx().await?;
+    let id = SteamId64::parse(&steam_id)?;
+    if refresh.unwrap_or(false) && !c.is_demo() && c.steam.is_configured() {
+        let mut n = vec![];
+        crate::services::linking::refresh_friends(&c, &id, true, &mut n).await?;
+    }
+    crate::services::linking::list_friends(&c, &steam_id).await
+}
+
+#[tauri::command]
 pub async fn set_favorite(state: St<'_>, steam_id: String, favorite: bool) -> AppResult<()> {
     let c = state.ctx().await?;
     player_service::ensure_known_player(&c, &steam_id).await?;

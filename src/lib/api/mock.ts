@@ -173,6 +173,7 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
       };
     case "poll_now":
       return 0;
+    case "get_bm_link_candidates":
     case "search_battlemetrics":
     case "link_battlemetrics":
       throw { kind: "validation", message: "В демо-режиме BattleMetrics не используется" };

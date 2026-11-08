@@ -284,6 +284,22 @@ impl BattleMetricsProvider {
         let v: Value = self.http.get_json("battlemetrics", Self::url("/players", &[("filter[search]", name), ("page[size]", "15")])?, Some(&t)).await?;
         Ok(parse_player_search(&v))
     }
+    /// Серверы Rust по IP (поиск BM ищет и по адресу). Возвращает точное совпадение ip:port, иначе все с тем же IP.
+    pub async fn servers_by_addr(&self, addr: &str) -> Result<Vec<ServerInfo>, ProviderError> {
+        let t = self.token()?;
+        let ip = addr.rsplit_once(':').map(|x| x.0).unwrap_or(addr);
+        if ip.parse::<std::net::Ipv4Addr>().is_err() {
+            return Err(ProviderError::InvalidData { detail: "некорректный IP".into() });
+        }
+        let v: Value = self
+            .http
+            .get_json("battlemetrics", Self::url("/servers", &[("filter[search]", ip), ("filter[game]", "rust"), ("page[size]", "20")])?, Some(&t))
+            .await?;
+        let all: Vec<ServerInfo> = parse_servers(&v).into_iter().filter(|s| s.address.as_deref().is_some_and(|a| a.starts_with(&format!("{ip}:")))).collect();
+        let exact: Vec<ServerInfo> = all.iter().filter(|s| s.address.as_deref() == Some(addr)).cloned().collect();
+        Ok(if exact.is_empty() { all } else { exact })
+    }
+
     pub async fn server_roster(&self, external_id: &str) -> Result<ServerRoster, ProviderError> {
         let t = self.token()?;
         if external_id.is_empty() || !external_id.bytes().all(|b| b.is_ascii_digit()) {
@@ -332,13 +348,21 @@ impl PresenceSource for BmPresence {
         let mut out = Vec::new();
         for id in ids {
             let Some(bm) = self.links.get(id) else {
-                out.push(Presence { steam_id: id.clone(), state: PresenceState::Unknown, server_id: None, server_name: None, persona_name: None });
+                out.push(Presence {
+                    steam_id: id.clone(),
+                    game_server_ip: None,
+                    state: PresenceState::Unknown,
+                    server_id: None,
+                    server_name: None,
+                    persona_name: None,
+                });
                 continue;
             };
             let info = self.provider.player_info(bm).await?;
             let on = info.servers.iter().find(|x| x.online);
             out.push(Presence {
                 steam_id: id.clone(),
+                game_server_ip: None,
                 state: if on.is_some() { PresenceState::Online } else { PresenceState::Offline },
                 server_id: on.map(|o| o.server_id.clone()),
                 server_name: on.map(|o| o.server_name.clone()),

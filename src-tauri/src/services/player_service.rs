@@ -1,7 +1,5 @@
 //! Поиск, профиль, обновление игрока из источников.
 
-use super::to_bounds;
-use crate::domain::analytics::co_sessions;
 use crate::domain::bans::{BanKind, BanRecord, RiskInput, RiskSummary, compute_risk};
 use crate::domain::ids::{BattleMetricsPlayerId, ParsedInput, SteamId64, parse_input};
 use crate::domain::provenance::{DataStatus, Provenance};
@@ -150,6 +148,14 @@ pub async fn refresh_player(ctx: &Ctx, id: &SteamId64, notices: &mut Vec<Notice>
             let Some(s) = list.into_iter().next() else {
                 return Err(AppError::not_found("Steam не вернул профиль для этого SteamID"));
             };
+            if let Some(addr) = &s.game_server_ip {
+                sqlx::query("UPDATE players SET last_game_server = ?, last_game_server_at = ? WHERE steam_id = ?")
+                    .bind(addr)
+                    .bind(fmt_ts(t))
+                    .bind(sid)
+                    .execute(&ctx.pool)
+                    .await?;
+            }
             if let Some(name) = &s.persona_name {
                 repo::record_alias(&ctx.pool, sid, name, "steam", t).await?;
             }
@@ -238,36 +244,24 @@ pub async fn refresh_player(ctx: &Ctx, id: &SteamId64, notices: &mut Vec<Notice>
         }
         Err(e) => notices.push(Notice { level: "warning", text: format!("Часы в Rust: {e}") }),
     }
-    // BattleMetrics: уже привязан — обновляем; нет — пробуем точное совпадение по steamID.
+    // Друзья Steam — для поиска настоящих тиммейтов.
+    crate::services::linking::refresh_friends(ctx, id, false, notices).await?;
+    // BattleMetrics: уже привязан — обновляем; нет — автопривязка (SteamID → сервер из Steam → оценка кандидатов).
     if ctx.bm.is_configured() {
         let existing = repo::list_links(&ctx.pool, sid).await?.into_iter().find(|l| l.provider == "battlemetrics");
         match existing {
             Some(l) => sync_bm(ctx, id, &BattleMetricsPlayerId(l.external_id), notices).await?,
-            None => match ctx.bm.match_steam_id(id).await {
-                Ok(Some(bm)) => {
-                    save_bm_link(ctx, sid, &bm, "exact_identifier").await?;
-                    notices.push(Notice { level: "info", text: format!("BattleMetrics: найден игрок {} по SteamID", bm.0) });
+            None => {
+                if let Some(bm) = crate::services::linking::auto_link(ctx, id, notices).await? {
                     sync_bm(ctx, id, &bm, notices).await?;
                 }
-                Ok(None) => {
-                    let persona = repo::get_player(&ctx.pool, sid).await?.and_then(|p| p.persona_name).unwrap_or_default();
-                    if let Some(bm) = auto_link_by_name(ctx, sid, &persona, notices).await? {
-                        sync_bm(ctx, id, &bm, notices).await?;
-                    }
-                }
-                Err(e) => {
-                    record_err(ctx, "battlemetrics", &e).await;
-                    notices.push(Notice {
-                        level: "warning", text: format!("BattleMetrics: {e}. Можно привязать игрока вручную в карточке.")
-                    });
-                }
-            },
+            }
         }
     }
     Ok(())
 }
 
-async fn save_bm_link(ctx: &Ctx, sid: &str, bm: &BattleMetricsPlayerId, evidence: &str) -> AppResult<()> {
+pub async fn save_link(ctx: &Ctx, sid: &str, bm: &BattleMetricsPlayerId, evidence: &str) -> AppResult<()> {
     crate::persistence::bm_repo::upsert_player(&ctx.pool, &bm.0, None, None, false).await?;
     crate::persistence::bm_repo::set_steam(&ctx.pool, &bm.0, Some(sid)).await?;
     repo::upsert_link(
@@ -277,7 +271,7 @@ async fn save_bm_link(ctx: &Ctx, sid: &str, bm: &BattleMetricsPlayerId, evidence
             provider: "battlemetrics".into(),
             external_id: bm.0.clone(),
             match_evidence: evidence.into(),
-            confidence: if evidence == "exact_identifier" { "high".into() } else { "medium".into() },
+            confidence: if matches!(evidence, "exact_identifier" | "server_ip_match") { "high".into() } else { "medium".into() },
             source_url: Some(format!("https://www.battlemetrics.com/players/{}", bm.0)),
             linked_at: fmt_ts(now()),
         },
@@ -364,62 +358,6 @@ async fn auto_watch(ctx: &Ctx, bm_id: &str, notices: &mut Vec<Notice>) -> AppRes
     Ok(())
 }
 
-/// Автопривязка по нику: ровно один игрок BM с точно таким же ником, активный за последние 30 дней.
-async fn auto_link_by_name(ctx: &Ctx, sid: &str, persona: &str, notices: &mut Vec<Notice>) -> AppResult<Option<BattleMetricsPlayerId>> {
-    let name = persona.trim();
-    if name.chars().count() < 3 {
-        return Ok(None);
-    }
-    let list = match ctx.bm.search_by_name(name).await {
-        Ok(l) => l,
-        Err(e) => {
-            notices.push(Notice { level: "warning", text: format!("BattleMetrics, поиск по нику: {e}") });
-            return Ok(None);
-        }
-    };
-    let recent = now() - Duration::days(30);
-    let exact: Vec<_> = list.iter().filter(|c| c.name.trim().eq_ignore_ascii_case(name) && c.last_seen.is_some_and(|l| l >= recent)).collect();
-    match exact.as_slice() {
-        [one] => {
-            let taken: Option<String> =
-                sqlx::query_scalar("SELECT steam_id FROM provider_links WHERE provider = 'battlemetrics' AND external_id = ? AND steam_id != ?")
-                    .bind(&one.external_id)
-                    .bind(sid)
-                    .fetch_optional(&ctx.pool)
-                    .await?;
-            if taken.is_some() {
-                return Ok(None);
-            }
-            let bm = BattleMetricsPlayerId(one.external_id.clone());
-            save_bm_link(ctx, sid, &bm, "auto_name_match").await?;
-            notices.push(Notice {
-                level: "warning",
-                text: format!(
-                    "BattleMetrics: автоматически связан по нику «{}» (BM {}). Ники не уникальны — проверьте в карточке и отвяжите, если это не он.",
-                    one.name, bm.0
-                ),
-            });
-            Ok(Some(bm))
-        }
-        [] => {
-            notices.push(Notice {
-                level: "warning",
-                text: format!(
-                    "BattleMetrics: игрок с ником «{name}», активный за 30 дней, не найден. Привяжите вручную в карточке (по другому нику или ссылке)."
-                ),
-            });
-            Ok(None)
-        }
-        many => {
-            notices.push(Notice {
-                level: "warning",
-                text: format!("BattleMetrics: найдено {} игроков с ником «{name}» — выберите нужного в карточке → «Привязать BattleMetrics».", many.len()),
-            });
-            Ok(None)
-        }
-    }
-}
-
 /// Ручная привязка игрока BattleMetrics (по ID или ссылке) к профилю Steam.
 pub async fn link_bm(ctx: &Ctx, steam_id: &str, input: &str) -> AppResult<Vec<Notice>> {
     if ctx.is_demo() {
@@ -446,7 +384,7 @@ pub async fn link_bm(ctx: &Ctx, steam_id: &str, input: &str) -> AppResult<Vec<No
     {
         return Err(AppError::validation(format!("Этот игрок BattleMetrics уже привязан к профилю {other}. Сначала отвяжите его там.")));
     }
-    save_bm_link(ctx, steam_id, &bm, evidence).await?;
+    save_link(ctx, steam_id, &bm, evidence).await?;
     let mut notices =
         vec![Notice { level: "info", text: format!("Привязан игрок BattleMetrics «{}» ({})", info.name.clone().unwrap_or_default(), bm.0) }];
     sync_bm(ctx, &id, &bm, &mut notices).await?;
@@ -521,12 +459,22 @@ pub struct ObservedServer {
 
 #[derive(Debug, Serialize)]
 pub struct Connection {
-    pub steam_id: String,
-    pub persona_name: Option<String>,
-    pub co_sessions: usize,
-    pub co_online_secs: i64,
-    pub servers: Vec<String>,
-    pub last_together: String,
+    /// teammate | friend | friend_teammate
+    pub kind: String,
+    pub steam_id: Option<String>,
+    pub bm_id: Option<String>,
+    pub name: Option<String>,
+    pub steam_friend: bool,
+    pub friend_since: Option<String>,
+    pub in_rust_now: Option<bool>,
+    pub joined_together: u32,
+    pub left_together: u32,
+    pub co_sessions: u32,
+    pub overlap_secs: i64,
+    pub last_together: Option<String>,
+    pub confidence: String,
+    pub score: f64,
+    pub reasons: Vec<String>,
     pub in_same_squad: bool,
 }
 
@@ -722,45 +670,97 @@ pub async fn get_profile(ctx: &Ctx, steam_id: &str) -> AppResult<PlayerProfile> 
     })
 }
 
-/// Связи — только по реальным совместным сессиям на одном сервере (≥ 20 мин, ≥ 2 раза).
-async fn connections(ctx: &Ctx, steam_id: &str, mine: &[SessionRow], squads: &[SquadRow]) -> AppResult<Vec<Connection>> {
-    let mine_b = to_bounds(mine);
-    let t = now();
-    let from = fmt_ts(t - Duration::days(90));
+/// Связи: тиммейты по BattleMetrics (все игроки BM, повторяющиеся совместные входы/выходы) + друзья Steam.
+/// Друг Steam, который играет с целью на том же сервере, — самый сильный сигнал.
+async fn connections(ctx: &Ctx, steam_id: &str, _mine: &[SessionRow], squads: &[SquadRow]) -> AppResult<Vec<Connection>> {
     let mut squad_members = std::collections::HashSet::new();
     for s in squads {
         for m in repo::list_squad_members(&ctx.pool, s.id).await? {
             squad_members.insert(m.steam_id);
         }
     }
-    let mut out = Vec::new();
-    for other in repo::list_players(&ctx.pool, None, false, 500, 0).await? {
-        if other.steam_id == steam_id {
+    let friends = crate::services::linking::list_friends(ctx, steam_id).await?;
+    let friend_by_id: std::collections::HashMap<&str, &crate::services::linking::FriendRow> = friends.iter().map(|f| (f.friend_id.as_str(), f)).collect();
+    let mut out: Vec<Connection> = vec![];
+    let mut used_friends = std::collections::HashSet::new();
+    let bm_id: Option<String> =
+        sqlx::query_scalar("SELECT bm_id FROM bm_players WHERE steam_id = ? ORDER BY last_seen DESC LIMIT 1").bind(steam_id).fetch_optional(&ctx.pool).await?;
+    if let Some(bm) = bm_id {
+        for t in crate::services::bm_service::teammates(ctx, &bm, 90).await? {
+            let c = &t.candidate;
+            let friend = t.steam_friend.as_ref();
+            if friend.is_none() && c.confidence == "low" {
+                continue;
+            }
+            let fr = friend.and_then(|f| friend_by_id.get(f.steam_id.as_str()).copied());
+            if let Some(f) = friend {
+                used_friends.insert(f.steam_id.clone());
+            }
+            let mut reasons = vec![];
+            if friend.is_some() {
+                reasons.push(if friend.is_some_and(|f| f.by == "link") {
+                    "друг в Steam".to_string()
+                } else {
+                    "друг в Steam (совпал ник на общем сервере)".to_string()
+                });
+            }
+            if c.joined_together > 0 {
+                reasons.push(format!("заходили вместе {} раз", c.joined_together));
+            }
+            if c.left_together > 0 {
+                reasons.push(format!("выходили вместе {} раз", c.left_together));
+            }
+            let sid = friend.map(|f| f.steam_id.clone()).or(t.steam_id.clone());
+            out.push(Connection {
+                kind: if friend.is_some() { "friend_teammate".into() } else { "teammate".into() },
+                in_same_squad: sid.as_ref().is_some_and(|s| squad_members.contains(s)),
+                steam_id: sid,
+                bm_id: Some(c.player.clone()),
+                name: t.name.clone().or(friend.and_then(|f| f.persona_name.clone())),
+                steam_friend: friend.is_some(),
+                friend_since: fr.and_then(|f| f.friend_since.clone()),
+                in_rust_now: fr.and_then(|f| f.in_rust),
+                joined_together: c.joined_together,
+                left_together: c.left_together,
+                co_sessions: c.co_sessions,
+                overlap_secs: c.overlap_secs,
+                last_together: Some(fmt_ts(c.last_together)),
+                confidence: c.confidence.to_string(),
+                score: c.score + if friend.is_some() { 100.0 } else { 0.0 },
+                reasons,
+            });
+        }
+    }
+    // Друзья Steam без совместной игры в наблюдениях: показываем, отмечая, кто сейчас в Rust.
+    for f in &friends {
+        if used_friends.contains(&f.friend_id) {
             continue;
         }
-        let theirs = repo::list_sessions(&ctx.pool, &other.steam_id, &from, &fmt_ts(t)).await?;
-        if theirs.is_empty() {
-            continue;
+        let mut reasons = vec!["друг в Steam".to_string()];
+        if f.in_rust == Some(true) {
+            reasons.push("сейчас в Rust".into());
         }
-        let ev = co_sessions(&mine_b, &to_bounds(&theirs), 20 * 60);
-        if ev.len() < 2 {
-            continue;
-        }
-        let mut servers: Vec<String> = ev.iter().map(|e| e.server_id.clone()).collect();
-        servers.sort();
-        servers.dedup();
         out.push(Connection {
-            in_same_squad: squad_members.contains(&other.steam_id),
-            steam_id: other.steam_id,
-            persona_name: other.persona_name,
-            co_sessions: ev.len(),
-            co_online_secs: ev.iter().map(|e| e.overlap_secs).sum(),
-            servers,
-            last_together: fmt_ts(ev[0].end),
+            kind: "friend".into(),
+            steam_id: Some(f.friend_id.clone()),
+            bm_id: None,
+            name: f.persona_name.clone(),
+            steam_friend: true,
+            friend_since: f.friend_since.clone(),
+            in_rust_now: f.in_rust,
+            joined_together: 0,
+            left_together: 0,
+            co_sessions: 0,
+            overlap_secs: 0,
+            last_together: None,
+            confidence: "unknown".into(),
+            score: if f.in_rust == Some(true) { 1.0 } else { 0.0 },
+            reasons,
+            in_same_squad: squad_members.contains(&f.friend_id),
         });
     }
-    out.sort_by_key(|x| std::cmp::Reverse(x.co_sessions));
-    out.truncate(20);
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.truncate(300);
     Ok(out)
 }
 
@@ -805,7 +805,9 @@ pub mod tests {
         assert_eq!(p.provenance.profile.status, DataStatus::Demo);
         assert_eq!(p.provenance.combat.status, DataStatus::Unsupported);
         assert!(p.sessions_total > 0);
-        assert!(!p.connections.is_empty(), "игроки одной группы имеют совместные сессии");
+        assert!(p.connections.iter().any(|c| c.kind == "friend_teammate" && c.name.as_deref() == Some("DEMO·Клещ")), "друг + играют вместе");
+        assert!(p.connections.iter().any(|c| c.kind == "friend" && c.name.as_deref() == Some("DEMO·Новичок")), "друг без совместной игры");
+        assert!(p.connections.iter().filter(|c| c.kind == "teammate").all(|c| c.confidence != "low"));
         // реальный SteamID в демо-режиме не ищется
         assert!(search(&ctx, "76561197960287930").await.is_err());
         // ник — кандидаты из локальной базы, без угадывания

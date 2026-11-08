@@ -46,6 +46,16 @@ impl SteamProvider {
         (self.key)().is_some()
     }
     /// Проверка ключа: запрос профиля известного публичного аккаунта из документации Valve.
+    /// Список друзей. Ok(None) — список скрыт настройками приватности.
+    pub async fn friends(&self, id: &SteamId64) -> Result<Option<Vec<Friend>>, ProviderError> {
+        let u = self.url("/ISteamUser/GetFriendList/v1/", &[("steamid", id.as_str()), ("relationship", "friend")])?;
+        match self.http.get_json::<serde_json::Value>("steam", u, None).await {
+            Ok(v) => parse_friends(&v.to_string()).map(Some),
+            Err(ProviderError::Forbidden { status: 401, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn test(&self) -> Result<String, ProviderError> {
         let id = SteamId64::parse("76561197960435530").map_err(|_| ProviderError::InvalidData { detail: "id".into() })?;
         let s = self.summaries(&[id]).await?;
@@ -91,6 +101,37 @@ struct RawSummary {
     timecreated: Option<i64>,
     loccountrycode: Option<String>,
     gameid: Option<String>,
+    gameserverip: Option<String>,
+}
+
+/// ip:port, только IPv4 и числовой порт.
+pub fn valid_server_addr(s: &str) -> bool {
+    let Some((ip, port)) = s.rsplit_once(':') else { return false };
+    ip.parse::<std::net::Ipv4Addr>().is_ok() && port.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Friend {
+    pub steam_id: SteamId64,
+    pub friend_since: Option<chrono::DateTime<Utc>>,
+}
+
+/// GetFriendList: None — список друзей скрыт (HTTP 401).
+pub fn parse_friends(body: &str) -> Result<Vec<Friend>, ProviderError> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| ProviderError::InvalidData { detail: e.to_string() })?;
+    Ok(v["friendslist"]["friends"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| {
+                    Some(Friend {
+                        steam_id: SteamId64::parse(f["steamid"].as_str()?).ok()?,
+                        friend_since: f["friend_since"].as_i64().and_then(|t| Utc.timestamp_opt(t, 0).single()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 pub fn parse_summaries(body: &str) -> Result<Vec<PlayerSummary>, ProviderError> {
@@ -121,6 +162,7 @@ pub fn parse_summaries(body: &str) -> Result<Vec<PlayerSummary>, ProviderError> 
             country_code: p.loccountrycode.map(|c| sanitize_text(&c, 4)),
             in_rust,
             persona_state: p.personastate,
+            game_server_ip: p.gameserverip.filter(|ip| p.gameid.as_deref() == Some(RUST_APP_ID) && valid_server_addr(ip) && !ip.starts_with("0.0.0.0")),
             steam_id,
         });
     }
@@ -242,7 +284,14 @@ pub fn presence_from_summary(s: &PlayerSummary) -> Presence {
         Some(false) => PresenceState::Offline,
         None => PresenceState::Unknown,
     };
-    Presence { steam_id: s.steam_id.clone(), state, server_id: None, server_name: None, persona_name: s.persona_name.clone() }
+    Presence {
+        steam_id: s.steam_id.clone(),
+        game_server_ip: s.game_server_ip.clone(),
+        state,
+        server_id: None,
+        server_name: None,
+        persona_name: s.persona_name.clone(),
+    }
 }
 
 #[async_trait]
@@ -259,7 +308,14 @@ impl PresenceSource for SteamProvider {
         // Отсутствующие в ответе — неизвестно.
         for id in ids {
             if !out.iter().any(|p| &p.steam_id == id) {
-                out.push(Presence { steam_id: id.clone(), state: PresenceState::Unknown, server_id: None, server_name: None, persona_name: None });
+                out.push(Presence {
+                    steam_id: id.clone(),
+                    game_server_ip: None,
+                    state: PresenceState::Unknown,
+                    server_id: None,
+                    server_name: None,
+                    persona_name: None,
+                });
             }
         }
         Ok(out)
@@ -286,6 +342,18 @@ mod tests {
         assert_eq!(s[2].in_rust, Some(false));
         assert_eq!(s[2].avatar_url, None, "javascript: URL отброшен");
         assert_eq!(s[2].profile_url.as_deref(), Some("https://steamcommunity.com/profiles/76561197960287932"), "чужой хост заменён");
+    }
+
+    #[test]
+    fn contract_friends_and_server_ip() {
+        let f = parse_friends(&fx("friends.json")).unwrap();
+        assert_eq!(f.len(), 2);
+        assert!(f[0].friend_since.is_some());
+        let s = parse_summaries(&fx("player_summaries.json")).unwrap();
+        assert_eq!(s[0].game_server_ip.as_deref(), Some("203.0.113.10:28015"));
+        assert_eq!(s[2].game_server_ip, None, "не Rust — IP не используется");
+        assert!(!valid_server_addr("evil:host"));
+        assert!(!valid_server_addr("1.2.3.4:0"));
     }
 
     #[test]

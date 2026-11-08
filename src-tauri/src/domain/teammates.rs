@@ -75,6 +75,18 @@ impl Default for TeammateOptions {
 }
 
 pub fn find_teammates(target: &[ObservedSession], others: &[ObservedSession], now: Ts, opt: TeammateOptions) -> Vec<TeammateCandidate> {
+    find_teammates_with(target, others, now, opt, &std::collections::HashSet::new())
+}
+
+/// `known_friends` — игроки, связь с которыми подтверждена извне (друзья Steam): для них достаточно
+/// одного совместного входа/выхода или двух совместных сессий.
+pub fn find_teammates_with(
+    target: &[ObservedSession],
+    others: &[ObservedSession],
+    now: Ts,
+    opt: TeammateOptions,
+    known_friends: &std::collections::HashSet<String>,
+) -> Vec<TeammateCandidate> {
     // индекс других сессий по серверу, отсортированных по началу
     let mut by_server: HashMap<&str, Vec<&ObservedSession>> = HashMap::new();
     let target_player = target.first().map(|t| t.player.as_str());
@@ -154,14 +166,27 @@ pub fn find_teammates(target: &[ObservedSession], others: &[ObservedSession], no
             let sync = c.joined_together + c.left_together;
             // Один случайный совпавший вечер — не сигнал. Нужна повторяемость в разных сессиях.
             let sync_sessions = c.evidence.iter().filter(|e| e.joined_together || e.left_together).count();
-            if sync_sessions < 2 && c.co_sessions < 5 {
-                return None;
-            }
+            let friend = known_friends.contains(&c.player);
+            // Просто «были на одном сервере» — не сигнал: на людном сервере совпадают сотни людей.
+            // Нужны повторяющиеся совместные входы/выходы (для друзей Steam достаточно одного или 2 совместных сессий).
             let base: u32 = c.servers.iter().map(|s| per_server.get(s.as_str()).copied().unwrap_or(0)).sum::<u32>().max(1);
             c.sync_rate = sync_sessions as f64 / base as f64;
+            // Не-другу нужно ≥ 2 совпадений И заметная доля (≥ 8% сессий цели на общих серверах):
+            // пара случайных совпадений за три месяца на людном сервере — это шум.
+            let keep = if friend { sync_sessions >= 1 || c.co_sessions >= 2 } else { sync_sessions >= 2 && c.sync_rate >= 0.08 };
+            if !keep {
+                return None;
+            }
             // Счёт учитывает и повторяемость, и долю: на людном сервере случайные совпадения неизбежны.
             c.score = (3.0 * c.joined_together as f64 + 3.0 * c.left_together as f64 + c.co_sessions as f64) * (0.25 + c.sync_rate);
-            c.confidence = if c.sync_rate >= 0.3 && c.joined_together >= 3 && sync >= 6 {
+            if friend {
+                c.score *= 2.0;
+            }
+            c.confidence = if friend && (sync_sessions >= 1 || c.co_sessions >= 3) {
+                "high"
+            } else if friend {
+                "medium"
+            } else if c.sync_rate >= 0.3 && c.joined_together >= 3 && sync >= 6 {
                 "high"
             } else if c.sync_rate >= 0.12 && sync >= 3 {
                 "medium"
@@ -214,6 +239,18 @@ mod tests {
         assert_eq!(r[0].confidence, "high");
         let rnd = r.iter().find(|c| c.player == "RANDOM");
         assert!(rnd.is_none_or(|c| c.joined_together == 0 && c.score < r[0].score));
+    }
+
+    #[test]
+    fn long_overlaps_alone_are_not_teammates_but_friends_are() {
+        // 6 вечеров на одном сервере, но входы/выходы в разное время
+        let target: Vec<_> = (0..6).map(|d| s("T", "srv", d * 1440, d * 1440 + 240)).collect();
+        let others: Vec<_> = (0..6).map(|d| s("X", "srv", d * 1440 + 60, d * 1440 + 400)).collect();
+        assert!(find_teammates(&target, &others, t0() + Duration::days(10), TeammateOptions::default()).is_empty(), "случайный сосед по серверу");
+        let friends: std::collections::HashSet<String> = ["X".to_string()].into();
+        let r = find_teammates_with(&target, &others, t0() + Duration::days(10), TeammateOptions::default(), &friends);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].confidence, "high", "друг Steam, который регулярно играет на том же сервере");
     }
 
     #[test]

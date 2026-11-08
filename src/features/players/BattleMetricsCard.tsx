@@ -37,10 +37,10 @@ export function BattleMetricsCard({ p }: { p: PlayerProfile }) {
         actions={
           link ? (
             <Badge
-              tone={link.match_evidence === "exact_identifier" ? "teal" : "amber"}
-              title={{ exact_identifier: "Совпадение по SteamID", auto_name_match: "Связано автоматически по нику — проверьте", user_confirmed: "Привязано вами вручную" }[link.match_evidence] ?? ""}
+              tone={["exact_identifier", "server_ip_match"].includes(link.match_evidence) ? "teal" : "amber"}
+              title={{ exact_identifier: "Совпадение по SteamID", server_ip_match: "Найден на том же сервере, что сообщил Steam", scored_match: "Связано автоматически по совокупности признаков — проверьте", auto_name_match: "Связано автоматически по нику — проверьте", user_confirmed: "Привязано вами вручную" }[link.match_evidence] ?? ""}
             >
-              {{ exact_identifier: "по SteamID", auto_name_match: "авто по нику — проверьте", user_confirmed: "вручную" }[link.match_evidence] ?? link.match_evidence}
+              {{ exact_identifier: "по SteamID", server_ip_match: "по серверу из Steam", scored_match: "авто — проверьте", auto_name_match: "авто по нику — проверьте", user_confirmed: "вручную" }[link.match_evidence] ?? link.match_evidence}
             </Badge>
           ) : (
             <Badge>не привязан</Badge>
@@ -95,11 +95,40 @@ function LinkDialog({ open, onClose, p, onLinked }: { open: boolean; onClose: ()
   const search = useMutation({ mutationFn: () => api.searchBattlemetrics(name), onError: (e) => toast.error(e.message) });
   const link = useMutation({ mutationFn: (input: string) => api.linkBattlemetrics(p.player.steam_id, input), onSuccess: onLinked, onError: (e) => toast.error(e.message) });
   const knownNames = new Set(p.aliases.map((a) => a.name.toLowerCase()));
+  const sugg = useQuery({ queryKey: ["bm-link-candidates", p.player.steam_id], queryFn: () => api.bmLinkCandidates(p.player.steam_id), enabled: open, staleTime: 120_000, retry: false });
   return (
     <Dialog open={open} onClose={onClose} title="Привязать игрока BattleMetrics" wide>
       <div className="space-y-4 text-[13px]">
         <div className="space-y-2">
-          <div className="font-medium">1. Найти по нику</div>
+          <div className="font-medium">Подобранные кандидаты</div>
+          <p className="text-[11px] text-faint">По нику, истории ников, активности и одновременному онлайну со Steam. Чем выше оценка, тем вероятнее.</p>
+          {sugg.isLoading && <LoadingRow />}
+          {sugg.error && <div className="text-xs text-amber">{sugg.error.message}</div>}
+          {sugg.data?.length === 0 && <div className="text-xs text-muted">Кандидатов нет — найдите вручную ниже.</div>}
+          {sugg.data && sugg.data.length > 0 && (
+            <ul className="max-h-64 divide-y divide-line overflow-y-auto rounded-md border border-line">
+              {sugg.data.map((c) => (
+                <li key={c.bm_id} className="flex items-center gap-3 px-3 py-2">
+                  <Badge tone={c.score >= 5 ? "teal" : c.score >= 2 ? "amber" : "neutral"}>{c.score}</Badge>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">
+                      {c.name} {c.online_now && <Badge tone="lime">онлайн · {c.online_now}</Badge>}
+                    </div>
+                    <div className="text-[11px] text-faint">{c.reasons.join(" · ")}</div>
+                  </div>
+                  <Button size="iconSm" variant="ghost" onClick={() => openExternal(c.source_url)} aria-label="Открыть на BattleMetrics">
+                    <ExternalLink className="size-3.5" />
+                  </Button>
+                  <Button size="sm" onClick={() => link.mutate(c.bm_id)} loading={link.isPending && link.variables === c.bm_id}>
+                    Это он
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="space-y-2">
+          <div className="font-medium">Найти по другому нику</div>
           <form
             className="flex gap-2"
             onSubmit={(e) => {
@@ -141,7 +170,7 @@ function LinkDialog({ open, onClose, p, onLinked }: { open: boolean; onClose: ()
           )}
         </div>
         <div className="space-y-2">
-          <div className="font-medium">2. Или вставить ссылку / ID</div>
+          <div className="font-medium">Или вставить ссылку / ID</div>
           <div className="flex gap-2">
             <Input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="https://www.battlemetrics.com/players/123456789" aria-label="Ссылка или ID игрока BattleMetrics" maxLength={200} />
             <Button variant="primary" onClick={() => link.mutate(manual)} loading={link.isPending && link.variables === manual} disabled={!manual.trim()}>
@@ -187,4 +216,8 @@ function BmMates({ bmId }: { bmId: string }) {
       )}
     </div>
   );
+}
+
+function LoadingRow() {
+  return <div className="text-xs text-faint">Подбираю кандидатов на BattleMetrics…</div>;
 }

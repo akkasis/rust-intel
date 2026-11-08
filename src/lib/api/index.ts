@@ -34,6 +34,7 @@ export const api = {
   clanFromTeammates: (bmId: string) => call<number>("bm_clan_from_teammates", { bmId }),
   clanReport: (id: number, range: T.RangeSpec, timezone?: string) => call<T.ClanReport>("get_bm_clan_report", { id, range, timezone }),
   serverInsights: (id: string, days = 7) => call<T.ServerInsights>("get_server_insights", { id, days }),
+  bmLinkCandidates: (steamId: string) => call<T.LinkCandidate[]>("get_bm_link_candidates", { steamId }),
   setFavorite: (steamId: string, favorite: boolean) => call<null>("set_favorite", { steamId, favorite }),
   setNotes: (steamId: string, notes: string | null) => call<null>("set_player_notes", { steamId, notes }),
   deletePlayer: (steamId: string) => call<null>("delete_player", { steamId }),

@@ -95,3 +95,12 @@ test("инсайты: распорядок, после вайпа, новый а
   await page.goto("/#/servers?id=demo%3A1");
   await expect(page.getByText("Топ по времени")).toBeVisible();
 });
+
+test("связи: друзья Steam и тиммейты без случайных игроков", async ({ page }) => {
+  await page.goto("/#/players/76561202060265729");
+  await page.getByRole("tab", { name: /Связи/ }).click();
+  await expect(page.getByRole("link", { name: "DEMO·Клещ" })).toBeVisible();
+  await expect(page.getByText("друг Steam").first()).toBeVisible();
+  await page.getByRole("radio", { name: /Друзья Steam/ }).click();
+  await expect(page.getByText("DEMO·Новичок")).toBeVisible();
+});

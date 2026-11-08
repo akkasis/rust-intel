@@ -280,6 +280,9 @@ pub async fn poll_once(ctx: &Ctx) -> Result<Vec<i64>, sqlx::Error> {
                 }
                 for p in &list {
                     new_events.extend(process_presence(ctx, id, p, t, interval).await?);
+                    if let Some(addr) = &p.game_server_ip {
+                        auto_link_from_server(ctx, &p.steam_id, addr, t).await;
+                    }
                 }
             }
             Err(err) => {
@@ -294,13 +297,40 @@ pub async fn poll_once(ctx: &Ctx) -> Result<Vec<i64>, sqlx::Error> {
                 }
                 // Состояние игроков — неизвестно (не офлайн).
                 for sid in &tracked {
-                    let p = Presence { steam_id: sid.clone(), state: PresenceState::Unknown, server_id: None, server_name: None, persona_name: None };
+                    let p = Presence {
+                        steam_id: sid.clone(),
+                        game_server_ip: None,
+                        state: PresenceState::Unknown,
+                        server_id: None,
+                        server_name: None,
+                        persona_name: None,
+                    };
                     process_presence(ctx, id, &p, t, interval).await?;
                 }
             }
         }
     }
     Ok(new_events)
+}
+
+/// Игрок в Rust и Steam сообщил сервер → запомнить и, если BM ещё не привязан, попробовать привязать.
+async fn auto_link_from_server(ctx: &Ctx, sid: &SteamId64, addr: &str, t: DateTime<Utc>) {
+    let _ = sqlx::query("UPDATE players SET last_game_server = ?, last_game_server_at = ? WHERE steam_id = ?")
+        .bind(addr)
+        .bind(fmt_ts(t))
+        .bind(sid.as_str())
+        .execute(&ctx.pool)
+        .await;
+    if ctx.is_demo() || !ctx.bm.is_configured() || crate::services::linking::is_linked(ctx, sid.as_str()).await.unwrap_or(true) {
+        return;
+    }
+    let mut notices = vec![];
+    if let Ok(Some(bm)) = crate::services::linking::try_server_ip_link(ctx, sid.as_str(), addr, &mut notices).await
+        && crate::services::player_service::save_link(ctx, sid.as_str(), &bm, "server_ip_match").await.is_ok()
+    {
+        let _ = crate::services::player_service::sync_bm(ctx, sid, &bm, &mut notices).await;
+        tracing::info!(steam = sid.as_str(), bm = bm.0, "BattleMetrics привязан по серверу из Steam");
+    }
 }
 
 fn source_event(provider: &'static str, kind: EventKind, t: DateTime<Utc>, details: serde_json::Value) -> NewEvent<'static> {
@@ -391,7 +421,7 @@ mod tests {
     use crate::services::player_service::tests::demo_ctx;
 
     fn pres(id: &SteamId64, s: PresenceState, server: Option<&str>) -> Presence {
-        Presence { steam_id: id.clone(), state: s, server_id: server.map(str::to_string), server_name: None, persona_name: None }
+        Presence { steam_id: id.clone(), game_server_ip: None, state: s, server_id: server.map(str::to_string), server_name: None, persona_name: None }
     }
 
     #[tokio::test]

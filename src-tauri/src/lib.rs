@@ -91,6 +91,8 @@ pub fn run() {
             commands::bm_clan_from_teammates,
             commands::get_bm_clan_report,
             commands::get_server_insights,
+            commands::get_bm_link_candidates,
+            commands::get_steam_friends,
             commands::set_favorite,
             commands::set_player_notes,
             commands::delete_player,

@@ -3,7 +3,7 @@
 use super::RangeSpec;
 use crate::domain::analytics::{ActivityAggregate, HeatmapOptions, Interval, PlayerTimeline, SessionBounds, aggregate_activity};
 use crate::domain::ids::{BattleMetricsPlayerId, SteamId64};
-use crate::domain::teammates::{ObservedSession, TeammateCandidate, TeammateOptions, find_teammates};
+use crate::domain::teammates::{ObservedSession, TeammateCandidate, TeammateOptions};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::clock::{fmt_ts, now, parse_ts};
 use crate::persistence::bm_repo::{self, BmNameRow, BmPlayerRow, BmServerRow, BmSessionRow, NewBmSession, WatchRow};
@@ -121,6 +121,7 @@ pub struct TeammateView {
     pub name: Option<String>,
     pub steam_id: Option<String>,
     pub tracked: bool,
+    pub steam_friend: Option<FriendMatch>,
 }
 
 #[derive(Debug, Serialize)]
@@ -241,6 +242,54 @@ fn to_observed(rows: &[BmSessionRow]) -> Vec<ObservedSession> {
         .collect()
 }
 
+/// Друзья Steam владельца BM-профиля, сопоставленные с игроками BM: по привязке (точно) или по нику
+/// среди игроков, встречавшихся на тех же серверах (вероятно).
+pub async fn friend_bm_map(ctx: &Ctx, bm_id: &str, servers: &[&str]) -> AppResult<HashMap<String, FriendMatch>> {
+    let mut out = HashMap::new();
+    let Some(steam) = bm_repo::get_player(&ctx.pool, bm_id).await?.and_then(|p| p.steam_id) else { return Ok(out) };
+    let friends = crate::services::linking::list_friends(ctx, &steam).await?;
+    if friends.is_empty() {
+        return Ok(out);
+    }
+    let mut by_name: HashMap<String, &crate::services::linking::FriendRow> = HashMap::new();
+    for f in &friends {
+        // точная привязка друга к BM
+        let linked: Vec<(String,)> = sqlx::query_as("SELECT bm_id FROM bm_players WHERE steam_id = ?").bind(&f.friend_id).fetch_all(&ctx.pool).await?;
+        for (b,) in linked {
+            out.insert(b, FriendMatch { steam_id: f.friend_id.clone(), persona_name: f.persona_name.clone(), by: "link".into() });
+        }
+        if let Some(n) = &f.persona_name {
+            by_name.insert(crate::services::linking::norm(n), f);
+        }
+    }
+    for s in servers {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT DISTINCT n.bm_id, n.name FROM bm_player_names n JOIN bm_sessions x ON x.bm_id = n.bm_id WHERE x.server_id = ?1
+                 UNION SELECT DISTINCT p.bm_id, p.name FROM bm_players p JOIN bm_sessions x ON x.bm_id = p.bm_id WHERE x.server_id = ?1 AND p.name IS NOT NULL",
+        )
+        .bind(s)
+        .fetch_all(&ctx.pool)
+        .await?;
+        for (b, n) in rows {
+            if b == bm_id || out.contains_key(&b) {
+                continue;
+            }
+            if let Some(f) = by_name.get(&crate::services::linking::norm(&n)) {
+                out.insert(b, FriendMatch { steam_id: f.friend_id.clone(), persona_name: f.persona_name.clone(), by: "name".into() });
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FriendMatch {
+    pub steam_id: String,
+    pub persona_name: Option<String>,
+    /// link — друг привязан к этому игроку BM; name — совпал ник на общем сервере
+    pub by: String,
+}
+
 pub async fn teammates(ctx: &Ctx, bm_id: &str, days: i64) -> AppResult<Vec<TeammateView>> {
     let t = now();
     let (from, to) = (fmt_ts(t - Duration::days(days)), fmt_ts(t));
@@ -249,10 +298,12 @@ pub async fn teammates(ctx: &Ctx, bm_id: &str, days: i64) -> AppResult<Vec<Teamm
     servers.sort();
     servers.dedup();
     let mut others = vec![];
-    for s in servers {
+    for s in &servers {
         others.extend(bm_repo::list_sessions_server(&ctx.pool, s, &from, &to).await?);
     }
-    let found = find_teammates(&to_observed(&mine), &to_observed(&others), t, TeammateOptions::default());
+    let friends = friend_bm_map(ctx, bm_id, &servers).await?;
+    let keep: std::collections::HashSet<String> = friends.keys().cloned().collect();
+    let found = crate::domain::teammates::find_teammates_with(&to_observed(&mine), &to_observed(&others), t, TeammateOptions::default(), &keep);
     let mut out = Vec::with_capacity(found.len());
     for c in found {
         let p = bm_repo::get_player(&ctx.pool, &c.player).await?;
@@ -260,6 +311,7 @@ pub async fn teammates(ctx: &Ctx, bm_id: &str, days: i64) -> AppResult<Vec<Teamm
             name: p.as_ref().and_then(|p| p.name.clone()),
             steam_id: p.as_ref().and_then(|p| p.steam_id.clone()),
             tracked: p.is_some_and(|p| p.tracked),
+            steam_friend: friends.get(&c.player).cloned(),
             candidate: c,
         });
     }
@@ -472,10 +524,17 @@ mod tests {
         assert_eq!(first.name.as_deref(), Some("DEMO·Сосед"), "тиммейты: {:?}", v.teammates.iter().map(|t| (&t.name, t.candidate.score)).collect::<Vec<_>>());
         assert!(first.candidate.joined_together >= 5);
         assert_ne!(first.candidate.confidence, "low");
+        let sosed = v.teammates.iter().find(|t| t.name.as_deref() == Some("DEMO·Сосед")).unwrap();
+        assert!(sosed.steam_friend.as_ref().is_some_and(|f| f.by == "name"), "друг Steam сопоставлен по нику");
+        assert_eq!(sosed.candidate.confidence, "high");
+        let klesh = v.teammates.iter().find(|t| t.name.as_deref() == Some("DEMO·Клещ")).unwrap();
+        assert!(klesh.steam_friend.as_ref().is_some_and(|f| f.by == "link"));
         if let Some(p) = v.teammates.iter().find(|t| t.name.as_deref() == Some("DEMO·Попутчик")) {
             assert!(p.candidate.joined_together <= 2 && p.candidate.score < first.candidate.score);
             assert_ne!(p.candidate.confidence, "high", "попутчик без совместных входов не может быть «высокой»");
         }
+        let randoms = v.teammates.iter().filter(|t| t.name.as_deref().is_some_and(|n| n.starts_with("DEMO·Игрок_"))).count();
+        assert!(randoms <= 1, "случайных игроков в тиммейтах: {randoms}");
         for t in v.teammates.iter().filter(|t| t.name.as_deref().is_some_and(|n| n.starts_with("DEMO·Игрок_"))) {
             assert_ne!(t.candidate.confidence, "high", "случайная массовка: {:?} rate={}", t.name, t.candidate.sync_rate);
         }

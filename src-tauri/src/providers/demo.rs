@@ -214,6 +214,42 @@ pub async fn seed(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Err
     if repo::get_setting(pool, "demo_v4_seeded").await?.is_none() {
         seed_v4(pool, now).await?;
     }
+    if repo::get_setting(pool, "demo_v5_seeded").await?.is_none() {
+        seed_v5(pool, now).await?;
+    }
+    Ok(())
+}
+
+/// 0.5: друзья Steam. Ворон дружит с Клещом и Совой (играют вместе), с Новичком (не играют вместе)
+/// и с «DEMO·Друг_Бетона»; Бетон и Лис — друзья.
+async fn seed_v5(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
+    let ts = fmt_ts(now);
+    let pairs: &[(u64, u64)] = &[(1, 2), (1, 3), (1, 6), (2, 3), (4, 5)];
+    for (a, b) in pairs {
+        for (x, y) in [(a, b), (b, a)] {
+            let fy = PLAYERS.iter().find(|p| p.n == *y).map(|p| p.name);
+            sqlx::query(
+                "INSERT OR REPLACE INTO steam_friends(steam_id, friend_id, persona_name, visibility, in_rust, friend_since, fetched_at) VALUES (?, ?, ?, 'public', 0, ?, ?)",
+            )
+            .bind(demo_steam_id(*x).as_str())
+            .bind(demo_steam_id(*y).as_str())
+            .bind(fy)
+            .bind(fmt_ts(now - Duration::days(400)))
+            .bind(&ts)
+            .execute(pool)
+            .await?;
+        }
+    }
+    // друг без привязки к BM — сопоставляется по нику на общем сервере
+    sqlx::query("INSERT OR REPLACE INTO steam_friends(steam_id, friend_id, persona_name, visibility, in_rust, friend_since, fetched_at) VALUES (?, ?, 'DEMO·Сосед', 'public', 1, ?, ?)")
+        .bind(demo_steam_id(1).as_str())
+        .bind(demo_steam_id(20).as_str())
+        .bind(fmt_ts(now - Duration::days(200)))
+        .bind(&ts)
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE players SET friends_status = 'ok', friends_fetched_at = ? WHERE is_demo = 1").bind(&ts).execute(pool).await?;
+    repo::set_setting(pool, "demo_v5_seeded", &ts).await?;
     Ok(())
 }
 
@@ -790,7 +826,14 @@ impl PresenceSource for DemoPresence {
             .iter()
             .map(|id| {
                 let Some(p) = PLAYERS.iter().find(|p| demo_steam_id(p.n) == *id) else {
-                    return Presence { steam_id: id.clone(), state: PresenceState::Unknown, server_id: None, server_name: None, persona_name: None };
+                    return Presence {
+                        steam_id: id.clone(),
+                        game_server_ip: None,
+                        state: PresenceState::Unknown,
+                        server_id: None,
+                        server_name: None,
+                        persona_name: None,
+                    };
                 };
                 // Онлайн в «своё» окно ±3 ч; каждые 20 минут состояние может смениться.
                 let h = now.hour() as i64;
@@ -799,6 +842,7 @@ impl PresenceSource for DemoPresence {
                 let online = in_window && bucket % 4 != 0 || (!in_window && bucket % 9 == 0);
                 Presence {
                     steam_id: id.clone(),
+                    game_server_ip: None,
                     state: if online { PresenceState::Online } else { PresenceState::Offline },
                     server_id: online.then(|| format!("demo:{}", group_server(p.group))),
                     server_name: None,

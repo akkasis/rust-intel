@@ -22,6 +22,10 @@ pub struct PlayerRow {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub friends_status: Option<String>,
+    pub friends_fetched_at: Option<String>,
+    pub last_game_server: Option<String>,
+    pub last_game_server_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

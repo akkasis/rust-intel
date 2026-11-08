@@ -18,10 +18,10 @@ import {
   EmptyState,
   ErrorState,
   Hint,
-  Input,
   LoadingBlock,
   Notice,
   ProvenanceChip,
+  Segmented,
   Select,
   StateDot,
   Switch,
@@ -450,53 +450,95 @@ function Bans({ p }: { p: PlayerProfile }) {
   );
 }
 
+const CONF_LABEL: Record<string, { label: string; tone: "teal" | "amber" | "neutral" }> = {
+  high: { label: "высокая", tone: "teal" },
+  medium: { label: "средняя", tone: "amber" },
+  low: { label: "низкая", tone: "neutral" },
+  unknown: { label: "—", tone: "neutral" },
+};
+
 function Connections({ p }: { p: PlayerProfile }) {
   const tz = useTz();
-  const [min, setMin] = useState(2);
-  const list = p.connections.filter((c) => c.co_sessions >= min);
+  const [filter, setFilter] = useState<"together" | "friends" | "all">("together");
+  const list = p.connections.filter((c) => (filter === "together" ? c.kind !== "friend" : filter === "friends" ? c.steam_friend : true));
+  const friendsTotal = p.connections.filter((c) => c.steam_friend).length;
+  const hasBm = p.links.some((l) => l.provider === "battlemetrics") || p.player.is_demo;
   return (
     <Card>
       <CardHeader
-        title="Возможные связи"
-        subtitle="Гипотеза на основе совместных сессий на одном сервере (≥ 20 мин). Не утверждение о знакомстве."
+        title="Тиммейты и друзья"
+        subtitle="Тиммейты — повторяющиеся совместные входы/выходы на одном сервере (все игроки BattleMetrics). Друг Steam, который играет вместе, — самый сильный сигнал."
         actions={
-          <label className="flex items-center gap-1.5 text-xs text-muted">
-            мин. совместных
-            <Input type="number" min={2} max={50} value={min} onChange={(e) => setMin(Math.max(2, Number(e.target.value) || 2))} className="h-7 w-16" />
-          </label>
+          <Segmented
+            label="Показать"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "together", label: "Играют вместе" },
+              { value: "friends", label: `Друзья Steam (${friendsTotal})` },
+              { value: "all", label: "Все" },
+            ]}
+          />
         }
       />
+      {!hasBm && <Notice tone="warning" className="m-3">Игрок не связан с BattleMetrics — совместная игра не видна. Свяжите в блоке BattleMetrics на вкладке «Обзор».</Notice>}
+      {p.player.friends_status === "private" && <Notice tone="info" className="m-3">Список друзей Steam скрыт игроком — показаны только тиммейты по совместной игре.</Notice>}
       {list.length === 0 ? (
-        <EmptyState title="Связей не найдено" text="Учитываются только игроки из локальной базы с наблюдаемыми сессиями на тех же серверах." />
+        <EmptyState
+          title={filter === "friends" ? "Друзей не найдено" : "Тиммейты пока не найдены"}
+          text="Тиммейты появляются, когда программа наблюдает серверы игрока и видит повторяющиеся совместные входы/выходы."
+        />
       ) : (
-        <table className="w-full text-[13px]">
-          <thead className="text-left text-[11px] tracking-wide text-faint uppercase">
-            <tr>
-              <th className="px-4 py-2 font-medium">Игрок</th>
-              <th className="px-2 py-2 text-right font-medium">Совместных сессий</th>
-              <th className="px-2 py-2 text-right font-medium">Вместе онлайн</th>
-              <th className="px-2 py-2 font-medium">Последний раз</th>
-              <th className="px-4 py-2 font-medium" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-line">
-            {list.map((c) => (
-              <tr key={c.steam_id} className="hover:bg-raised">
-                <td className="px-4 py-2">
-                  <Link to={`/players/${c.steam_id}`} className="hover:text-teal">
-                    {c.persona_name ?? c.steam_id}
-                  </Link>
-                </td>
-                <td className="px-2 py-2 text-right num">{c.co_sessions}</td>
-                <td className="px-2 py-2 text-right num">{fmtDuration(c.co_online_secs)}</td>
-                <td className="px-2 py-2 text-muted num">{fmtRelative(c.last_together)}</td>
-                <td className="px-4 py-2 text-right">{c.in_same_squad ? <Badge tone="teal">в одном отряде</Badge> : <Badge>гипотеза</Badge>}</td>
+        <div className="max-h-[560px] overflow-y-auto">
+          <table className="w-full text-[13px]">
+            <thead className="sticky top-0 bg-panel text-left text-[11px] tracking-wide text-faint uppercase">
+              <tr>
+                <th className="px-4 py-2 font-medium">Игрок</th>
+                <th className="px-2 py-2 font-medium">Связь</th>
+                <th className="px-2 py-2 text-right font-medium">Вошли / вышли вместе</th>
+                <th className="px-2 py-2 text-right font-medium">Вместе онлайн</th>
+                <th className="px-2 py-2 font-medium">Последний раз</th>
+                <th className="px-4 py-2 font-medium">Уверенность</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {list.map((c, i) => (
+                <tr key={(c.bm_id ?? "") + (c.steam_id ?? "") + i} className="align-top hover:bg-raised">
+                  <td className="px-4 py-2">
+                    {c.bm_id ? (
+                      <Link to={`/bm/${c.bm_id}`} className="font-medium hover:text-teal">
+                        {c.name ?? c.bm_id}
+                      </Link>
+                    ) : c.steam_id ? (
+                      <Link to={`/search?q=${c.steam_id}`} className="font-medium hover:text-teal" title="Открыть профиль Steam">
+                        {c.name ?? c.steam_id}
+                      </Link>
+                    ) : (
+                      <span>{c.name}</span>
+                    )}
+                    <div className="text-[11px] text-faint">{c.reasons.join(" · ")}</div>
+                  </td>
+                  <td className="px-2 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {c.steam_friend && <Badge tone="teal">друг Steam</Badge>}
+                      {c.kind !== "friend" && <Badge tone="lime">играют вместе</Badge>}
+                      {c.in_rust_now && <Badge tone="lime">сейчас в Rust</Badge>}
+                      {c.in_same_squad && <Badge>в одном отряде</Badge>}
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-right num">{c.kind === "friend" ? "—" : `${c.joined_together} / ${c.left_together}`}</td>
+                  <td className="px-2 py-2 text-right num">{c.overlap_secs ? fmtDuration(c.overlap_secs) : "—"}</td>
+                  <td className="px-2 py-2 text-muted num">{c.last_together ? fmtRelative(c.last_together) : c.friend_since ? `дружат с ${fmtDateTime(c.friend_since, tz, { hour: undefined, minute: undefined })}` : "—"}</td>
+                  <td className="px-4 py-2">
+                    <Badge tone={CONF_LABEL[c.confidence]?.tone ?? "neutral"}>{CONF_LABEL[c.confidence]?.label ?? c.confidence}</Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-      <span className="sr-only">{tz}</span>
+      <div className="border-t border-line px-4 py-2 text-[11px] text-faint">Тиммейт — гипотеза по совпадению времени. Друзья Steam берутся из открытого списка друзей.</div>
     </Card>
   );
 }

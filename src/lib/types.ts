@@ -32,6 +32,10 @@ export interface Player {
   notes: string | null;
   created_at: Iso;
   updated_at: Iso;
+  friends_status: "ok" | "private" | "error" | null;
+  friends_fetched_at: Iso | null;
+  last_game_server: string | null;
+  last_game_server_at: Iso | null;
 }
 
 export interface Alias {
@@ -209,12 +213,21 @@ export interface ServerStat {
 }
 
 export interface Connection {
-  steam_id: SteamId;
-  persona_name: string | null;
+  kind: "teammate" | "friend" | "friend_teammate";
+  steam_id: SteamId | null;
+  bm_id: string | null;
+  name: string | null;
+  steam_friend: boolean;
+  friend_since: Iso | null;
+  in_rust_now: boolean | null;
+  joined_together: number;
+  left_together: number;
   co_sessions: number;
-  co_online_secs: number;
-  servers: string[];
-  last_together: Iso;
+  overlap_secs: number;
+  last_together: Iso | null;
+  confidence: "high" | "medium" | "low" | "unknown";
+  score: number;
+  reasons: string[];
   in_same_squad: boolean;
 }
 
@@ -544,6 +557,7 @@ export interface Teammate {
   name: string | null;
   steam_id: SteamId | null;
   tracked: boolean;
+  steam_friend: { steam_id: SteamId; persona_name: string | null; by: "link" | "name" } | null;
   co_sessions: number;
   joined_together: number;
   left_together: number;
@@ -685,4 +699,14 @@ export interface ServerInsights {
   newcomers: ServerPlayerStat[];
   observed_since: Iso | null;
   note: string | null;
+}
+
+export interface LinkCandidate {
+  bm_id: string;
+  name: string;
+  score: number;
+  reasons: string[];
+  last_seen: Iso | null;
+  online_now: string | null;
+  source_url: string;
 }
