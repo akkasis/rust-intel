@@ -1,0 +1,614 @@
+//! Демо-режим: ВЫМЫШЛЕННЫЕ записи для оценки интерфейса без ключей.
+//! Демо хранится в отдельной БД (rid-demo.sqlite) и никогда не смешивается с реальными данными.
+//! SteamID демо-профилей лежат в диапазоне account id ≥ 4 100 000 000, который Steam ещё не выдавал;
+//! ссылок на steamcommunity.com для них нет.
+
+use super::error::ProviderError;
+use super::{Presence, PresenceSource, PresenceState};
+use crate::domain::bans::{BanKind, BanRecord};
+use crate::domain::ids::{STEAM_ID64_BASE, SteamId64};
+use crate::infrastructure::clock::fmt_ts;
+use crate::persistence::models::{ProviderLinkRow, ServerRow};
+use crate::persistence::repo::{self, NewEvent, NewSession, PlayerUpsert};
+use async_trait::async_trait;
+use chrono::{DateTime, Duration, DurationRound, Timelike, Utc};
+use sqlx::SqlitePool;
+
+pub const DEMO_ACCOUNT_BASE: u64 = 4_100_000_000;
+const POLL_MIN: i64 = 5;
+
+pub fn demo_steam_id(n: u64) -> SteamId64 {
+    SteamId64::from_u64(STEAM_ID64_BASE + DEMO_ACCOUNT_BASE + n).expect("demo id")
+}
+
+pub fn is_demo_id(id: &SteamId64) -> bool {
+    id.account_id() as u64 >= DEMO_ACCOUNT_BASE
+}
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn f(&mut self) -> f64 {
+        (self.next() % 1_000_000) as f64 / 1_000_000.0
+    }
+    fn range(&mut self, a: i64, b: i64) -> i64 {
+        a + (self.next() % ((b - a).max(1) as u64)) as i64
+    }
+}
+
+pub struct DemoPlayer {
+    pub n: u64,
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub group: usize,
+    /// Предпочитаемое начало игры, час UTC.
+    pub start_hour_utc: i64,
+    pub play_prob: f64,
+    pub private: bool,
+    pub hours: Option<f64>,
+    pub vac: i64,
+    pub game: i64,
+    pub days_since_ban: i64,
+    pub created_days_ago: Option<i64>,
+    /// Дней наблюдения (меньше 90 → показывает недостаток данных).
+    pub observed_days: i64,
+}
+
+pub const PLAYERS: &[DemoPlayer] = &[
+    DemoPlayer {
+        n: 1,
+        name: "DEMO·Ворон",
+        aliases: &["DEMO·Raven", "DEMO·ворон_77"],
+        group: 0,
+        start_hour_utc: 16,
+        play_prob: 0.8,
+        private: false,
+        hours: Some(3120.0),
+        vac: 0,
+        game: 0,
+        days_since_ban: 0,
+        created_days_ago: Some(3200),
+        observed_days: 90,
+    },
+    DemoPlayer {
+        n: 2,
+        name: "DEMO·Клещ",
+        aliases: &["DEMO·Tick"],
+        group: 0,
+        start_hour_utc: 16,
+        play_prob: 0.75,
+        private: false,
+        hours: Some(1850.0),
+        vac: 0,
+        game: 1,
+        days_since_ban: 410,
+        created_days_ago: Some(1500),
+        observed_days: 90,
+    },
+    DemoPlayer {
+        n: 3,
+        name: "DEMO·Сова",
+        aliases: &[],
+        group: 0,
+        start_hour_utc: 17,
+        play_prob: 0.6,
+        private: true,
+        hours: None,
+        vac: 0,
+        game: 0,
+        days_since_ban: 0,
+        created_days_ago: None,
+        observed_days: 90,
+    },
+    DemoPlayer {
+        n: 4,
+        name: "DEMO·Бетон",
+        aliases: &["DEMO·Concrete", "DEMO·бетонщик"],
+        group: 1,
+        start_hour_utc: 19,
+        play_prob: 0.7,
+        private: false,
+        hours: Some(5400.0),
+        vac: 1,
+        game: 0,
+        days_since_ban: 1200,
+        created_days_ago: Some(4000),
+        observed_days: 90,
+    },
+    DemoPlayer {
+        n: 5,
+        name: "DEMO·Лис",
+        aliases: &[],
+        group: 1,
+        start_hour_utc: 19,
+        play_prob: 0.65,
+        private: false,
+        hours: Some(980.0),
+        vac: 0,
+        game: 0,
+        days_since_ban: 0,
+        created_days_ago: Some(700),
+        observed_days: 90,
+    },
+    DemoPlayer {
+        n: 6,
+        name: "DEMO·Новичок",
+        aliases: &[],
+        group: 2,
+        start_hour_utc: 12,
+        play_prob: 0.5,
+        private: false,
+        hours: Some(42.0),
+        vac: 0,
+        game: 0,
+        days_since_ban: 0,
+        created_days_ago: Some(40),
+        observed_days: 6,
+    },
+    DemoPlayer {
+        n: 7,
+        name: "DEMO·Полуночник",
+        aliases: &["DEMO·Midnight"],
+        group: 3,
+        start_hour_utc: 22,
+        play_prob: 0.85,
+        private: false,
+        hours: Some(7800.0),
+        vac: 0,
+        game: 2,
+        days_since_ban: 60,
+        created_days_ago: Some(2900),
+        observed_days: 90,
+    },
+    DemoPlayer {
+        n: 8,
+        name: "DEMO·Тихий",
+        aliases: &[],
+        group: 4,
+        start_hour_utc: 8,
+        play_prob: 0.4,
+        private: false,
+        hours: None,
+        vac: 0,
+        game: 0,
+        days_since_ban: 0,
+        created_days_ago: Some(5000),
+        observed_days: 45,
+    },
+];
+
+pub const SERVERS: &[(&str, &str, &str, i64)] = &[
+    ("1", "[DEMO] Северный Форпост 2x", "RU", 200),
+    ("2", "[DEMO] Ржавая Гавань Vanilla", "DE", 300),
+    ("3", "[DEMO] Пустошь Solo/Duo", "FI", 150),
+    ("4", "[DEMO] Ночной Рейд 5x", "PL", 250),
+];
+
+fn group_server(group: usize) -> &'static str {
+    match group {
+        0 => "1",
+        1 => "2",
+        2 => "3",
+        _ => "4",
+    }
+}
+
+fn floor5(t: DateTime<Utc>) -> DateTime<Utc> {
+    t.duration_trunc(Duration::minutes(POLL_MIN)).unwrap_or(t)
+}
+
+/// Заполняет демо-БД. Идемпотентно: при повторном вызове не дублирует записи.
+pub async fn seed(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
+    if repo::get_setting(pool, "demo_seeded").await?.is_some() {
+        return Ok(());
+    }
+    let now = floor5(now);
+    let mut rng = Rng(0x5eed_1234_abcd_ef01);
+
+    for (id, name, country, max) in SERVERS {
+        repo::upsert_server(
+            pool,
+            &ServerRow {
+                id: format!("demo:{id}"),
+                provider: "demo".into(),
+                external_id: (*id).into(),
+                name: (*name).into(),
+                address: Some(format!("198.51.100.{id}:28015")),
+                country: Some((*country).into()),
+                map: Some("Procedural Map".into()),
+                players: Some(rng.range(*max / 3, *max)),
+                max_players: Some(*max),
+                queue: Some(rng.range(0, 5)),
+                online: Some(true),
+                trust: Some("demo".into()),
+                last_wipe_at: Some(fmt_ts(now - Duration::days(rng.range(1, 6)))),
+                next_wipe_at: Some(fmt_ts(now + Duration::days(rng.range(1, 6)))),
+                followed: *id == "1" || *id == "2",
+                source_url: None,
+                fetched_at: fmt_ts(now),
+                is_demo: true,
+            },
+        )
+        .await?;
+        // часовая история онлайна сервера за 30 дней (серверный уровень)
+        let mut pts = Vec::new();
+        for h in 0..(30 * 24) {
+            let t = now - Duration::hours(h);
+            let hour = t.hour() as f64;
+            let wave = ((hour - 18.0) / 24.0 * std::f64::consts::TAU).cos();
+            let p = (*max as f64 * (0.45 + 0.35 * wave) + rng.f() * 15.0).clamp(0.0, *max as f64);
+            pts.push((fmt_ts(t.duration_trunc(Duration::hours(1)).unwrap_or(t)), (p * 10.0).round() / 10.0));
+        }
+        repo::insert_population(pool, &format!("demo:{id}"), &pts, "demo").await?;
+    }
+
+    // Окна работы «приложения»: каждый день с перерывами, плюс трёхдневный пробел.
+    let mut app_windows: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
+    for d in (0..90).rev() {
+        if (40..43).contains(&d) {
+            continue; // ПК был выключен
+        }
+        let day = (now - Duration::days(d)).duration_trunc(Duration::days(1)).unwrap_or(now);
+        let off_start = rng.range(1, 6);
+        let off_len = rng.range(0, 7);
+        let a = day;
+        let b = day + Duration::hours(off_start);
+        let c = b + Duration::hours(off_len);
+        let e = (day + Duration::days(1)).min(now);
+        if b > a {
+            app_windows.push((a, b.min(e)));
+        }
+        if e > c {
+            app_windows.push((c, e));
+        }
+    }
+
+    for p in PLAYERS {
+        let sid = demo_steam_id(p.n);
+        let s = sid.as_str();
+        repo::upsert_player(
+            pool,
+            &PlayerUpsert {
+                steam_id: s.into(),
+                persona_name: Some(p.name.into()),
+                visibility: Some(if p.private { "private" } else { "public" }.into()),
+                account_created_at: p.created_days_ago.map(|d| fmt_ts(now - Duration::days(d))),
+                country_code: Some("ZZ".into()),
+                rust_hours: p.hours,
+                rust_hours_status: Some(if p.hours.is_some() { "verified" } else { "hidden" }.into()),
+                steam_in_game: Some(false),
+                steam_status: Some("demo".into()),
+                steam_fetched_at: Some(fmt_ts(now - Duration::minutes(rng.range(5, 300)))),
+                is_demo: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+        if p.n <= 2 || p.n == 7 {
+            repo::set_favorite(pool, s, true).await?;
+        }
+        repo::record_alias(pool, s, p.name, "demo", now - Duration::days(2)).await?;
+        for (i, a) in p.aliases.iter().enumerate() {
+            repo::record_alias(pool, s, a, "demo", now - Duration::days(30 + 20 * i as i64)).await?;
+        }
+        repo::upsert_link(
+            pool,
+            &ProviderLinkRow {
+                steam_id: s.into(),
+                provider: "demo".into(),
+                external_id: format!("demo-player-{}", p.n),
+                match_evidence: "demo".into(),
+                confidence: "high".into(),
+                source_url: None,
+                linked_at: fmt_ts(now),
+            },
+        )
+        .await?;
+        let mut bans = vec![
+            BanRecord {
+                kind: BanKind::Vac,
+                provider: "demo".into(),
+                count: Some(p.vac),
+                active: p.vac > 0,
+                days_since_last: (p.vac + p.game > 0).then_some(p.days_since_ban),
+                reason: None,
+                project_name: None,
+                revoked: None,
+                source_url: None,
+                observed_at: now,
+            },
+            BanRecord {
+                kind: BanKind::Game,
+                provider: "demo".into(),
+                count: Some(p.game),
+                active: p.game > 0,
+                days_since_last: (p.vac + p.game > 0).then_some(p.days_since_ban),
+                reason: None,
+                project_name: None,
+                revoked: None,
+                source_url: None,
+                observed_at: now,
+            },
+            BanRecord {
+                kind: BanKind::Community,
+                provider: "demo".into(),
+                count: None,
+                active: false,
+                days_since_last: None,
+                reason: None,
+                project_name: None,
+                revoked: None,
+                source_url: None,
+                observed_at: now,
+            },
+            BanRecord {
+                kind: BanKind::Economy,
+                provider: "demo".into(),
+                count: None,
+                active: false,
+                days_since_last: None,
+                reason: None,
+                project_name: None,
+                revoked: None,
+                source_url: None,
+                observed_at: now,
+            },
+        ];
+        if p.n == 7 {
+            bans.push(BanRecord {
+                kind: BanKind::Project,
+                provider: "demo".into(),
+                count: None,
+                active: true,
+                days_since_last: None,
+                reason: Some("Вымышленная причина: макросы (демо)".into()),
+                project_name: Some("[DEMO] Ночной Рейд".into()),
+                revoked: Some(false),
+                source_url: None,
+                observed_at: now - Duration::days(12),
+            });
+        }
+        repo::replace_bans(pool, s, "demo", &bans).await?;
+
+        // Покрытие игрока = окна приложения в пределах observed_days.
+        let obs_from = now - Duration::days(p.observed_days);
+        for (a, b) in &app_windows {
+            let a2 = (*a).max(obs_from);
+            if *b > a2 {
+                repo::add_coverage(pool, s, "demo", a2, *b).await?;
+            }
+        }
+    }
+
+    // Сессии: группы играют вместе, сдвиги входа/выхода ±.
+    for d in (0..90).rev() {
+        let day = (now - Duration::days(d)).duration_trunc(Duration::days(1)).unwrap_or(now);
+        let weekend = matches!((day + Duration::hours(3)).format("%u").to_string().as_str(), "5" | "6" | "7");
+        for group in 0..5usize {
+            let members: Vec<&DemoPlayer> = PLAYERS.iter().filter(|p| p.group == group).collect();
+            let lead = members[0];
+            let prob = (lead.play_prob + if weekend { 0.15 } else { 0.0 }).min(0.95);
+            if rng.f() > prob {
+                continue;
+            }
+            let start = day + Duration::hours(lead.start_hour_utc) + Duration::minutes(rng.range(-60, 90));
+            let dur = Duration::minutes(rng.range(70, if weekend { 360 } else { 260 }));
+            for m in members {
+                if rng.f() > 0.85 {
+                    continue;
+                }
+                let st = start + Duration::minutes(rng.range(-20, 25));
+                let en = st + dur + Duration::minutes(rng.range(-40, 40));
+                insert_demo_session(pool, m, st, en, now, &app_windows).await?;
+            }
+        }
+    }
+
+    // Трекер и события последних дней
+    for n in [1u64, 2, 4, 7] {
+        repo::set_tracked(pool, demo_steam_id(n).as_str(), true).await?;
+    }
+    let s1 = repo::create_squad(pool, "[DEMO] Клан «Северяне»", "#2dd4bf", Some("Вымышленный отряд для демонстрации")).await?;
+    for n in [1u64, 2, 3] {
+        repo::add_squad_member(pool, s1, demo_steam_id(n).as_str(), "demo").await?;
+    }
+    let s2 = repo::create_squad(pool, "[DEMO] Дуо «Бетон»", "#a3e635", None).await?;
+    for n in [4u64, 5] {
+        repo::add_squad_member(pool, s2, demo_steam_id(n).as_str(), "demo").await?;
+    }
+    for p in PLAYERS.iter().filter(|p| [1, 2, 4, 7].contains(&p.n)) {
+        let sid = demo_steam_id(p.n);
+        let sessions = repo::list_sessions(pool, sid.as_str(), &fmt_ts(now - Duration::days(3)), &fmt_ts(now)).await?;
+        for se in sessions {
+            let (Some(sl), Some(su)) = (crate::infrastructure::clock::parse_ts(&se.start_lower), crate::infrastructure::clock::parse_ts(&se.start_upper))
+            else {
+                continue;
+            };
+            repo::insert_event(
+                pool,
+                &NewEvent {
+                    steam_id: Some(sid.as_str()),
+                    provider: "demo",
+                    kind: "joined_observed_server",
+                    dedup_key: format!("demo:join:{}:{}", sid, se.start_upper),
+                    occurred_lower: sl,
+                    occurred_upper: su,
+                    approximate: true,
+                    server_id: se.server_id.as_deref(),
+                    details: serde_json::json!({"poll_interval_secs": POLL_MIN * 60, "demo": true}),
+                },
+            )
+            .await?;
+            if let Some(eu) = se.end_upper.as_deref().and_then(crate::infrastructure::clock::parse_ts)
+                && let Some(el) = crate::infrastructure::clock::parse_ts(&se.end_lower)
+            {
+                repo::insert_event(
+                    pool,
+                    &NewEvent {
+                        steam_id: Some(sid.as_str()),
+                        provider: "demo",
+                        kind: "left_observed_server",
+                        dedup_key: format!("demo:left:{}:{}", sid, se.start_upper),
+                        occurred_lower: el,
+                        occurred_upper: eu,
+                        approximate: true,
+                        server_id: se.server_id.as_deref(),
+                        details: serde_json::json!({"poll_interval_secs": POLL_MIN * 60, "demo": true}),
+                    },
+                )
+                .await?;
+            }
+        }
+    }
+    repo::insert_event(
+        pool,
+        &NewEvent {
+            steam_id: Some(demo_steam_id(4).as_str()),
+            provider: "demo",
+            kind: "name_changed",
+            dedup_key: "demo:name:4".into(),
+            occurred_lower: now - Duration::days(1) - Duration::minutes(10),
+            occurred_upper: now - Duration::days(1),
+            approximate: true,
+            server_id: None,
+            details: serde_json::json!({"from": "DEMO·бетонщик", "to": "DEMO·Бетон", "demo": true}),
+        },
+    )
+    .await?;
+    repo::insert_event(
+        pool,
+        &NewEvent {
+            steam_id: None,
+            provider: "demo",
+            kind: "source_unavailable",
+            dedup_key: "demo:outage:1".into(),
+            occurred_lower: now - Duration::hours(30),
+            occurred_upper: now - Duration::hours(30),
+            approximate: false,
+            server_id: None,
+            details: serde_json::json!({"provider": "demo", "error": "timeout (вымышленный сбой)", "demo": true}),
+        },
+    )
+    .await?;
+    repo::record_health_ok(pool, "demo").await?;
+    repo::set_setting(pool, "demo_seeded", &fmt_ts(now)).await?;
+    Ok(())
+}
+
+async fn insert_demo_session(
+    pool: &SqlitePool,
+    p: &DemoPlayer,
+    st: DateTime<Utc>,
+    en: DateTime<Utc>,
+    now: DateTime<Utc>,
+    windows: &[(DateTime<Utc>, DateTime<Utc>)],
+) -> Result<(), sqlx::Error> {
+    if st >= now || st < now - Duration::days(p.observed_days) {
+        return Ok(());
+    }
+    // Сессия видна только внутри окна наблюдения.
+    let Some((wa, wb)) = windows.iter().find(|(a, b)| st >= *a && st < *b) else { return Ok(()) };
+    let _ = wa;
+    let start_upper = floor5(st) + Duration::minutes(POLL_MIN);
+    let start_lower = floor5(st);
+    let (end_lower, end_upper, open) = if en >= now {
+        (floor5(now), None, true)
+    } else if en >= *wb {
+        // Наблюдение оборвалось раньше конца сессии — конец неизвестен.
+        (floor5(*wb), None, false)
+    } else {
+        (floor5(en), Some(floor5(en) + Duration::minutes(POLL_MIN)), false)
+    };
+    if end_lower <= start_upper {
+        return Ok(());
+    }
+    let sid = demo_steam_id(p.n);
+    let server = format!("demo:{}", group_server(p.group));
+    repo::upsert_session(
+        pool,
+        &NewSession {
+            steam_id: sid.as_str(),
+            provider: "demo",
+            kind: "inferred_from_polls",
+            server_id: Some(&server),
+            start_lower,
+            start_upper,
+            end_lower,
+            end_upper,
+            is_open: open,
+            external_id: None,
+        },
+    )
+    .await
+}
+
+/// Симуляция присутствия для трекера в демо-режиме.
+pub struct DemoPresence;
+
+#[async_trait]
+impl PresenceSource for DemoPresence {
+    fn id(&self) -> &'static str {
+        "demo"
+    }
+    fn min_poll_secs(&self) -> u64 {
+        30
+    }
+    async fn presence(&self, ids: &[SteamId64]) -> Result<Vec<Presence>, ProviderError> {
+        let now = Utc::now();
+        Ok(ids
+            .iter()
+            .map(|id| {
+                let Some(p) = PLAYERS.iter().find(|p| demo_steam_id(p.n) == *id) else {
+                    return Presence { steam_id: id.clone(), state: PresenceState::Unknown, server_id: None, server_name: None, persona_name: None };
+                };
+                // Онлайн в «своё» окно ±3 ч; каждые 20 минут состояние может смениться.
+                let h = now.hour() as i64;
+                let in_window = (h - p.start_hour_utc).rem_euclid(24) < 4;
+                let bucket = now.timestamp() / 1200 + p.n as i64;
+                let online = in_window && bucket % 4 != 0 || (!in_window && bucket % 9 == 0);
+                Presence {
+                    steam_id: id.clone(),
+                    state: if online { PresenceState::Online } else { PresenceState::Offline },
+                    server_id: online.then(|| format!("demo:{}", group_server(p.group))),
+                    server_name: None,
+                    persona_name: Some(p.name.to_string()),
+                }
+            })
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::db::open_memory;
+
+    #[test]
+    fn demo_ids_are_valid_and_outside_issued_range() {
+        let id = demo_steam_id(1);
+        assert!(is_demo_id(&id));
+        assert!(SteamId64::parse(id.as_str()).is_ok());
+        assert!(!is_demo_id(&SteamId64::parse("76561197960287930").unwrap()));
+    }
+
+    #[tokio::test]
+    async fn seed_is_idempotent_and_marked_demo() {
+        let pool = open_memory().await.unwrap();
+        let now = Utc::now();
+        seed(&pool, now).await.unwrap();
+        let n1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions").fetch_one(&pool).await.unwrap();
+        seed(&pool, now).await.unwrap();
+        let n2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions").fetch_one(&pool).await.unwrap();
+        assert_eq!(n1, n2);
+        assert!(n1 > 50);
+        let non_demo: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM players WHERE is_demo = 0").fetch_one(&pool).await.unwrap();
+        assert_eq!(non_demo, 0);
+        let names: Vec<String> = sqlx::query_scalar("SELECT persona_name FROM players").fetch_all(&pool).await.unwrap();
+        assert!(names.iter().all(|n| n.starts_with("DEMO·")));
+    }
+}

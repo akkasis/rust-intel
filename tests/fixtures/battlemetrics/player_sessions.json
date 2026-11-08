@@ -1,0 +1,10 @@
+{"data":[
+ {"type":"session","id":"s-0001","attributes":{"start":"2026-11-01T18:00:00.000Z","stop":"2026-11-01T21:30:00.000Z","firstTime":false,"name":"Sanitized","private":false},
+  "relationships":{"server":{"data":{"type":"server","id":"1000001"}},"player":{"data":{"type":"player","id":"900001"}}}},
+ {"type":"session","id":"s-0002","attributes":{"start":"2026-11-02T19:00:00.000Z","stop":null,"firstTime":false,"name":"Sanitized2","private":false},
+  "relationships":{"server":{"data":{"type":"server","id":"1000002"}},"player":{"data":{"type":"player","id":"900001"}}}}
+],
+"included":[
+ {"type":"server","id":"1000001","attributes":{"name":"Sanitized Server A","ip":"203.0.113.10","port":28015,"players":120,"maxPlayers":200,"status":"online","country":"DE"}},
+ {"type":"server","id":"1000002","attributes":{"name":"Sanitized Server B","ip":"203.0.113.11","port":28015,"players":50,"maxPlayers":100,"status":"online","country":"RU"}}
+]}

@@ -1,0 +1,5 @@
+{"response":{"players":[
+ {"steamid":"76561197960287930","communityvisibilitystate":3,"profilestate":1,"personaname":"Sanitized Public","profileurl":"https://steamcommunity.com/id/sanitized/","avatarfull":"https://avatars.steamstatic.com/0000000000000000000000000000000000000000_full.jpg","personastate":1,"timecreated":1063407589,"loccountrycode":"US","gameid":"252490","gameextrainfo":"Rust"},
+ {"steamid":"76561197960287931","communityvisibilitystate":1,"profilestate":1,"personaname":"Sanitized Private","profileurl":"https://steamcommunity.com/profiles/76561197960287931/","avatarfull":"https://avatars.steamstatic.com/1111111111111111111111111111111111111111_full.jpg","personastate":0},
+ {"steamid":"76561197960287932","communityvisibilitystate":3,"profilestate":1,"personaname":"Sanitized Other Game","profileurl":"https://evil.example/x","avatarfull":"javascript:alert(1)","personastate":1,"gameid":"730"}
+]}}

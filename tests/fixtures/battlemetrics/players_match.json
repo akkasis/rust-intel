@@ -1,0 +1,2 @@
+{"data":[{"type":"identifier","id":"id-1","attributes":{"type":"steamID","identifier":"76561197960287930"},
+  "relationships":{"player":{"data":{"type":"player","id":"900001"}}}}]}

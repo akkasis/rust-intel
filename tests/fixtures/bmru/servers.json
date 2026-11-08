@@ -1,0 +1,4 @@
+{"game":"rust","page":1,"per_page":20,"total":2,"pages":1,"servers":[
+ {"id":101,"game":"rust","name":"Sanitized RU Server","address":"203.0.113.20","port":28015,"query_port":28016,"map":"Procedural Map","country":"RU","online":true,"players":180,"max_players":250,"queue":3,"trust":"confirmed","uptime":0.98,"last_seen":"2026-11-08T12:00:00Z","last_wipe":"2026-11-06T16:00:00Z","first_seen":"2024-01-01T00:00:00Z","url":"https://battlemetrics.ru/game/rust/server/101"},
+ {"id":102,"game":"rust","name":"Sanitized Suspicious","address":"203.0.113.21","port":28015,"query_port":28016,"map":"Barren","country":"DE","online":true,"players":null,"max_players":500,"queue":0,"trust":"suspicious","uptime":0.5,"last_seen":"2026-11-08T12:00:00Z","last_wipe":null,"first_seen":"2025-01-01T00:00:00Z","url":"https://battlemetrics.ru/game/rust/server/102"}
+]}

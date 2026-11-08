@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint & tests (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Frontend typecheck / lint / unit
+        run: |
+          npm run typecheck
+          npm run lint
+          npm test
+      - name: Frontend build
+        run: npx vite build
+      - name: Rust fmt / clippy / test
+        working-directory: src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+      - name: e2e (Playwright, браузерный mock)
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+  bundle:
+    name: NSIS installer (windows-latest)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build NSIS installer
+        run: npx tauri build --bundles nsis
+      - name: Smoke-test release binary starts
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem src-tauri/target/release -Filter "rust-intel-desktop.exe" | Select-Object -First 1
+          if (-not $exe) { throw "exe не найден" }
+          $p = Start-Process $exe.FullName -PassThru
+          Start-Sleep -Seconds 12
+          if ($p.HasExited) { throw "Приложение завершилось с кодом $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rid-windows-x64-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
