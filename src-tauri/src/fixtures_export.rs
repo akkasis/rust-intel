@@ -54,6 +54,34 @@ mod tests {
             pop.insert(s.id.clone(), v(&server_service::population(&ctx, &s.id, "7d").await.unwrap()));
         }
         m.insert("get_server_population".into(), Value::Object(pop));
+        // BattleMetrics
+        use crate::persistence::bm_repo;
+        use crate::providers::demo::demo_bm_id;
+        use crate::services::bm_service;
+        m.insert("list_bm_players".into(), v(&bm_repo::list_players(&ctx.pool, None, false, 300).await.unwrap()));
+        m.insert("list_server_watch".into(), v(&bm_repo::list_watch(&ctx.pool).await.unwrap()));
+        let mut bmp = Map::new();
+        let mut bma = Map::new();
+        let mut ids: Vec<String> = PLAYERS.iter().map(|p| demo_bm_id(p.n)).collect();
+        ids.extend(["9200001".to_string(), "9200002".to_string(), "9300001".to_string()]);
+        for id in &ids {
+            let mut view = bm_service::player_view(&ctx, id, false).await.unwrap();
+            view.sessions.truncate(80);
+            bmp.insert(id.clone(), v(&view));
+            for preset in ["7d", "30d", "90d"] {
+                bma.insert(
+                    format!("{id}:{preset}"),
+                    v(&bm_service::activity(&ctx, id, &RangeSpec { preset: preset.into(), from: None, to: None }, Some("Europe/Moscow")).await.unwrap()),
+                );
+            }
+        }
+        m.insert("get_bm_player".into(), Value::Object(bmp));
+        m.insert("get_bm_activity".into(), Value::Object(bma));
+        let mut online = Map::new();
+        for s in repo::list_servers(&ctx.pool, None, false, 50).await.unwrap() {
+            online.insert(s.id.clone(), v(&bm_service::server_online(&ctx, &s.id).await.unwrap()));
+        }
+        m.insert("get_server_online".into(), Value::Object(online));
         m.insert("_meta".into(), json!({"generated_from": "providers::demo::seed", "note": "ВЫМЫШЛЕННЫЕ данные демо-режима"}));
         let path = format!("{}/../src/lib/api/mock-data.json", env!("CARGO_MANIFEST_DIR"));
         std::fs::write(&path, serde_json::to_string(&Value::Object(m)).unwrap()).unwrap();

@@ -96,6 +96,30 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
       if (!r) throw { kind: "not_found", message: "Отряд не найден" };
       return r;
     }
+    case "get_bm_player": {
+      const id = String(args.bmId ?? "").replace(/.*\/players\//, "").replace(/\/$/, "");
+      const r = (f.get_bm_player as Record<string, unknown>)[id];
+      if (!r) throw { kind: "not_found", message: "В демо-режиме доступны только вымышленные игроки BM (откройте их из списка)" };
+      return r;
+    }
+    case "get_bm_activity": {
+      const preset = (args.range as { preset: string }).preset;
+      const r = (f.get_bm_activity as Record<string, unknown>)[`${args.bmId}:${["7d", "30d", "90d"].includes(preset) ? preset : "7d"}`];
+      if (!r) throw { kind: "not_found", message: "Нет данных" };
+      return r;
+    }
+    case "get_server_online": {
+      const r = (f.get_server_online as Record<string, unknown>)[String(args.id)];
+      if (!r) throw { kind: "not_found", message: "Сервер не найден" };
+      return r;
+    }
+    case "list_bm_players": {
+      const q = String(args.query ?? "").toLowerCase();
+      const list = f.list_bm_players as { name: string | null; bm_id: string; tracked: boolean }[];
+      return list.filter((p) => (!q || (p.name ?? "").toLowerCase().includes(q) || p.bm_id === q) && (!args.trackedOnly || p.tracked));
+    }
+    case "list_server_watch":
+      return f.list_server_watch;
     case "get_server_population": {
       const r = (f.get_server_population as Record<string, unknown>)[String(args.id)];
       if (!r) throw { kind: "not_found", message: "Сервер не найден" };

@@ -264,6 +264,8 @@ pub async fn refresh_player(ctx: &Ctx, id: &SteamId64, notices: &mut Vec<Notice>
 }
 
 async fn save_bm_link(ctx: &Ctx, sid: &str, bm: &BattleMetricsPlayerId, evidence: &str) -> AppResult<()> {
+    crate::persistence::bm_repo::upsert_player(&ctx.pool, &bm.0, None, None, false).await?;
+    crate::persistence::bm_repo::set_steam(&ctx.pool, &bm.0, Some(sid)).await?;
     repo::upsert_link(
         &ctx.pool,
         &ProviderLinkRow {
@@ -364,6 +366,7 @@ pub async fn link_bm(ctx: &Ctx, steam_id: &str, input: &str) -> AppResult<Vec<No
 
 pub async fn unlink_bm(ctx: &Ctx, steam_id: &str) -> AppResult<()> {
     SteamId64::parse(steam_id)?;
+    sqlx::query("UPDATE bm_players SET steam_id = NULL WHERE steam_id = ?").bind(steam_id).execute(&ctx.pool).await?;
     sqlx::query("DELETE FROM provider_links WHERE steam_id = ? AND provider = 'battlemetrics'").bind(steam_id).execute(&ctx.pool).await?;
     sqlx::query("DELETE FROM player_server_stats WHERE steam_id = ? AND provider = 'battlemetrics'").bind(steam_id).execute(&ctx.pool).await?;
     sqlx::query("DELETE FROM sessions WHERE steam_id = ? AND provider = 'battlemetrics'").bind(steam_id).execute(&ctx.pool).await?;

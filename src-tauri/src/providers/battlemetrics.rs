@@ -132,6 +132,30 @@ pub fn parse_player_info(body: &Value) -> Option<BmPlayerInfo> {
     Some(BmPlayerInfo { id: BattleMetricsPlayerId(id), name: d["attributes"]["name"].as_str().map(|n| sanitize_text(n, 64)), steam_id, names, servers })
 }
 
+/// Онлайн-игроки сервера из `GET /servers/{id}?include=player` (только BM id и ник; SteamID не раскрывается).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServerRoster {
+    pub server: ServerInfo,
+    pub players: Vec<(String, String)>,
+}
+
+pub fn parse_server_roster(body: &Value) -> Option<ServerRoster> {
+    let server = parse_servers(&serde_json::json!({ "data": [body["data"].clone()] })).into_iter().next()?;
+    let players = body["included"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|i| i["type"] == "player")
+                .filter_map(|i| {
+                    let id = i["id"].as_str()?;
+                    id.bytes().all(|b| b.is_ascii_digit()).then(|| (id.to_string(), sanitize_text(i["attributes"]["name"].as_str().unwrap_or("?"), 64)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(ServerRoster { server, players })
+}
+
 pub fn parse_sessions(body: &Value) -> Vec<ProviderSession> {
     let mut names: HashMap<String, String> = HashMap::new();
     if let Some(inc) = body["included"].as_array() {
@@ -260,6 +284,15 @@ impl BattleMetricsProvider {
         let v: Value = self.http.get_json("battlemetrics", Self::url("/players", &[("filter[search]", name), ("page[size]", "15")])?, Some(&t)).await?;
         Ok(parse_player_search(&v))
     }
+    pub async fn server_roster(&self, external_id: &str) -> Result<ServerRoster, ProviderError> {
+        let t = self.token()?;
+        if external_id.is_empty() || !external_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ProviderError::InvalidData { detail: "некорректный server id".into() });
+        }
+        let v: Value = self.http.get_json("battlemetrics", Self::url(&format!("/servers/{external_id}"), &[("include", "player")])?, Some(&t)).await?;
+        parse_server_roster(&v).ok_or_else(|| ProviderError::InvalidData { detail: "пустой ответ /servers/{id}".into() })
+    }
+
     pub async fn player_info(&self, player: &BattleMetricsPlayerId) -> Result<BmPlayerInfo, ProviderError> {
         let t = self.token()?;
         if !player.0.bytes().all(|b| b.is_ascii_digit()) {
@@ -368,6 +401,14 @@ mod tests {
         let other = SteamId64::parse("76561197960287931").unwrap();
         assert_eq!(parse_match(&v, &ok), Some(BattleMetricsPlayerId("900001".into())));
         assert_eq!(parse_match(&v, &other), None, "никаких нечётких сопоставлений");
+    }
+    #[test]
+    fn contract_server_roster() {
+        let r = parse_server_roster(&fx("server_with_players.json")).unwrap();
+        assert_eq!(r.server.external_id, "1000001");
+        assert_eq!(r.players.len(), 3);
+        assert_eq!(r.players[1], ("900002".to_string(), "Mate One".to_string()));
+        assert_eq!(r.server.map.as_deref(), Some("Procedural Map"));
     }
     #[test]
     fn parses_player_id_input() {

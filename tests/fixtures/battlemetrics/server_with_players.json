@@ -1,0 +1,6 @@
+{"data":{"type":"server","id":"1000001","attributes":{"name":"Sanitized Server A","ip":"203.0.113.10","port":28015,"players":3,"maxPlayers":200,"status":"online","country":"DE","details":{"map":"Procedural Map","rust_last_wipe":"2026-11-05T18:00:00.000Z"}}},
+ "included":[
+  {"type":"player","id":"900001","attributes":{"name":"Sanitized","private":false},"meta":{"metadata":[]}},
+  {"type":"player","id":"900002","attributes":{"name":"Mate One","private":false}},
+  {"type":"player","id":"900003","attributes":{"name":"<script>x</script>","private":false}}
+ ]}

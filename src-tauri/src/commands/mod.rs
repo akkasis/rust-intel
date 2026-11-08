@@ -15,7 +15,7 @@ use crate::services::export::ImportResult;
 use crate::services::player_service::{PlayerProfile, SearchOutcome};
 use crate::services::server_service::{PopulationReport, RefreshResult};
 use crate::services::tracker_service::TrackerStatus;
-use crate::services::{RangeSpec, analytics_service, export, notifications, player_service, server_service, tracker_service};
+use crate::services::{RangeSpec, analytics_service, bm_service, export, notifications, player_service, server_service, tracker_service};
 use crate::state::AppState;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -150,6 +150,59 @@ pub async fn link_battlemetrics(state: St<'_>, steam_id: String, input: String) 
 #[tauri::command]
 pub async fn unlink_battlemetrics(state: St<'_>, steam_id: String) -> AppResult<()> {
     player_service::unlink_bm(&state.ctx().await?, &steam_id).await
+}
+
+#[tauri::command]
+pub async fn get_bm_player(state: St<'_>, bm_id: String, refresh: Option<bool>) -> AppResult<bm_service::BmPlayerView> {
+    if bm_id.len() > 200 {
+        return Err(AppError::validation("Слишком длинный ввод"));
+    }
+    bm_service::player_view(&state.ctx().await?, &bm_id, refresh.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn get_bm_activity(
+    state: St<'_>,
+    bm_id: String,
+    range: RangeSpec,
+    timezone: Option<String>,
+) -> AppResult<crate::domain::analytics::ActivityAggregate> {
+    bm_service::activity(&state.ctx().await?, &bm_id, &range, timezone.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn list_bm_players(state: St<'_>, query: Option<String>, tracked_only: Option<bool>) -> AppResult<Vec<crate::persistence::bm_repo::BmPlayerRow>> {
+    Ok(crate::persistence::bm_repo::list_players(&state.ctx().await?.pool, query.as_deref(), tracked_only.unwrap_or(false), 300).await?)
+}
+
+#[tauri::command]
+pub async fn set_bm_tracked(state: St<'_>, bm_id: String, tracked: bool) -> AppResult<()> {
+    bm_service::set_tracked(&state.ctx().await?, &bm_id, tracked).await
+}
+
+#[tauri::command]
+pub async fn link_bm_to_steam(state: St<'_>, bm_id: String, steam_input: String) -> AppResult<Vec<player_service::Notice>> {
+    if steam_input.len() > 300 {
+        return Err(AppError::validation("Слишком длинный ввод"));
+    }
+    bm_service::link_steam(&state.ctx().await?, &bm_id, &steam_input).await
+}
+
+#[tauri::command]
+pub async fn get_server_online(state: St<'_>, id: String) -> AppResult<bm_service::ServerOnline> {
+    bm_service::server_online(&state.ctx().await?, &id).await
+}
+
+#[tauri::command]
+pub async fn set_server_watch(state: St<'_>, id: String, enabled: bool) -> AppResult<()> {
+    let r = bm_service::set_watch(&state.ctx().await?, &id, enabled).await;
+    state.tracker_wake.notify_one();
+    r
+}
+
+#[tauri::command]
+pub async fn list_server_watch(state: St<'_>) -> AppResult<Vec<crate::persistence::bm_repo::WatchRow>> {
+    bm_service::list_watch(&state.ctx().await?).await
 }
 
 #[tauri::command]

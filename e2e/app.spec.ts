@@ -66,3 +66,17 @@ test("инструкция открывается и ищется", async ({ pag
   await expect(page.getByRole("heading", { name: "Уведомления Windows и Telegram" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Быстрый старт" })).toHaveCount(0);
 });
+
+test("BattleMetrics: игрок, тиммейты, онлайн сервера", async ({ page }) => {
+  await page.getByRole("link", { name: "BattleMetrics" }).click();
+  await page.getByLabel("Фильтр игроков").fill("Ворон");
+  await page.getByRole("link", { name: /DEMO·Ворон/ }).first().click();
+  await expect(page.getByRole("heading", { name: "DEMO·Ворон" })).toBeVisible();
+  await page.getByRole("tab", { name: /Тиммейты/ }).click();
+  await expect(page.getByRole("link", { name: "DEMO·Сосед" })).toBeVisible();
+  await page.getByRole("tab", { name: /Сессии/ }).click();
+  await expect(page.getByText("Зашёл")).toBeVisible();
+  await page.goto("/#/servers?id=demo%3A1");
+  await expect(page.getByText("Онлайн сейчас")).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Наблюдать за сервером" })).toBeChecked();
+});

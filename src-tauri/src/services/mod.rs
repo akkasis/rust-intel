@@ -1,4 +1,5 @@
 pub mod analytics_service;
+pub mod bm_service;
 pub mod export;
 pub mod notifications;
 pub mod player_service;

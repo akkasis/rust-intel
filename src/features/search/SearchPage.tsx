@@ -58,6 +58,11 @@ export function SearchPage() {
 
   const submit = (v = q) => {
     if (!v.trim()) return;
+    const bm = /battlemetrics\.com\/(?:rcon\/)?players\/(\d{1,15})/i.exec(v);
+    if (bm) {
+      nav(`/bm/${bm[1]}`);
+      return;
+    }
     setParams({ q: v.trim() }, { replace: true });
     m.mutate(v.trim());
   };

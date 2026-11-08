@@ -17,6 +17,8 @@ import { ServersPage } from "@/features/servers/ServersPage";
 import { IntegrationsPage } from "@/features/integrations/IntegrationsPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 import { HelpPage } from "@/features/help/HelpPage";
+import { BmHomePage } from "@/features/bm/BmHomePage";
+import { BmPlayerPage } from "@/features/bm/BmPlayerPage";
 
 const router = createHashRouter([
   {
@@ -36,6 +38,8 @@ const router = createHashRouter([
       { path: "integrations", element: <IntegrationsPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "help", element: <HelpPage /> },
+      { path: "bm", element: <BmHomePage /> },
+      { path: "bm/:bmId", element: <BmPlayerPage /> },
       { path: "*", element: <Navigate to="/" replace /> },
     ],
   },

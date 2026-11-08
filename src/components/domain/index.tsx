@@ -52,6 +52,10 @@ export function EventItem({ e, tz, compact }: { e: EventRow; tz: string; compact
             <Link to={`/players/${e.steam_id}`} className="font-medium hover:text-teal">
               {e.persona_name ?? e.steam_id}
             </Link>
+          ) : typeof details.bm_id === "string" ? (
+            <Link to={`/bm/${details.bm_id}`} className="font-medium hover:text-teal">
+              {String(details.name ?? details.bm_id)}
+            </Link>
           ) : (
             <span className="font-medium">{PROVIDER_NAMES[String(details.provider ?? e.provider)] ?? e.provider}</span>
           )}

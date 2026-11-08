@@ -4,6 +4,7 @@ import {
   Activity,
   Ban,
   BookOpen,
+  Crosshair,
   ChevronsLeft,
   ChevronsRight,
   Gauge,
@@ -27,7 +28,8 @@ import { Logo } from "./Logo";
 const NAV = [
   { to: "/", label: "Обзор", icon: Gauge, end: true },
   { to: "/search", label: "Поиск игрока", icon: Search },
-  { to: "/players", label: "Игроки", icon: UserRound },
+  { to: "/bm", label: "BattleMetrics", icon: Crosshair },
+  { to: "/players", label: "Игроки Steam", icon: UserRound },
   { to: "/activity", label: "Активность", icon: Activity },
   { to: "/squads", label: "Отряды", icon: Users },
   { to: "/tracker", label: "Live-трекер", icon: Radar },

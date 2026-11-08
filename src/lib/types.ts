@@ -481,3 +481,121 @@ export interface AppErrorPayload {
   provider?: string;
   error?: { kind: string; retry_after_secs?: number | null };
 }
+
+// ---------------------------------------------------------------- BattleMetrics
+
+export interface BmPlayer {
+  bm_id: string;
+  name: string | null;
+  steam_id: SteamId | null;
+  tracked: boolean;
+  first_seen: Iso | null;
+  last_seen: Iso | null;
+  fetched_at: Iso | null;
+  is_demo: boolean;
+  updated_at: Iso;
+}
+
+export interface BmName {
+  name: string;
+  first_seen: Iso;
+  last_seen: Iso;
+}
+
+export interface BmServer {
+  server_id: string;
+  server_name: string | null;
+  online: boolean;
+  first_seen: Iso | null;
+  last_seen: Iso | null;
+  time_played_secs: number | null;
+  fetched_at: Iso;
+}
+
+export interface BmSession {
+  id: number;
+  bm_id: string;
+  player_name: string | null;
+  server_id: string;
+  server_name: string | null;
+  source: "server_watch" | "bm_api" | "demo";
+  start_lower: Iso;
+  start_upper: Iso;
+  start_known: boolean;
+  end_lower: Iso;
+  end_upper: Iso | null;
+  end_known: boolean;
+  is_open: boolean;
+}
+
+export interface TogetherEvidence {
+  server_id: string;
+  start: Iso;
+  end: Iso;
+  overlap_secs: number;
+  joined_together: boolean;
+  left_together: boolean;
+  join_delta_secs: number | null;
+}
+
+export interface Teammate {
+  player: string;
+  name: string | null;
+  steam_id: SteamId | null;
+  tracked: boolean;
+  co_sessions: number;
+  joined_together: number;
+  left_together: number;
+  overlap_secs: number;
+  servers: string[];
+  last_together: Iso;
+  score: number;
+  sync_rate: number;
+  confidence: "high" | "medium" | "low";
+  evidence: TogetherEvidence[];
+}
+
+export interface BmPlayerView {
+  player: BmPlayer;
+  source_url: string;
+  names: BmName[];
+  servers: BmServer[];
+  sessions: BmSession[];
+  sessions_total: number;
+  observed_secs: number;
+  online_now: BmServer | null;
+  steam: Player | null;
+  teammates: Teammate[];
+  teammates_note: string;
+  notices: Notice[];
+  watched_servers: number;
+}
+
+export interface OnlinePlayer {
+  bm_id: string;
+  name: string;
+  since: Iso | null;
+  since_known: boolean;
+  tracked: boolean;
+  steam_id: SteamId | null;
+}
+
+export interface ServerOnline {
+  server_id: string;
+  fetched_at: Iso;
+  source: string;
+  watched: boolean;
+  players: OnlinePlayer[];
+  note: string | null;
+}
+
+export interface WatchRow {
+  server_id: string;
+  server_name: string | null;
+  enabled: boolean;
+  added_at: Iso;
+  last_polled_at: Iso | null;
+  last_success_at: Iso | null;
+  last_error: string | null;
+  last_online: number | null;
+}

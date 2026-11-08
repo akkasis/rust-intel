@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ExternalLink, Link2, Link2Off, RefreshCw, Search } from "lucide-react";
@@ -52,6 +53,9 @@ export function BattleMetricsCard({ p }: { p: PlayerProfile }) {
                 {link.external_id} <ExternalLink className="size-3" />
               </button>
               <span className="text-[11px] text-faint">привязан {fmtRelative(link.linked_at)}</span>
+              <Link to={`/bm/${link.external_id}`} className="text-xs text-teal hover:underline">
+                Страница игрока BM → тиммейты, сессии
+              </Link>
             </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" onClick={() => refresh.mutate()} loading={refresh.isPending}>

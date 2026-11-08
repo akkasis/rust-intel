@@ -204,9 +204,157 @@ fn floor5(t: DateTime<Utc>) -> DateTime<Utc> {
 
 /// Заполняет демо-БД. Идемпотентно: при повторном вызове не дублирует записи.
 pub async fn seed(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
-    if repo::get_setting(pool, "demo_seeded").await?.is_some() {
-        return Ok(());
+    if repo::get_setting(pool, "demo_seeded").await?.is_none() {
+        seed_base(pool, now).await?;
     }
+    // Слой BattleMetrics добавлен в 0.3 — досеивается и в уже существующие демо-базы.
+    if repo::get_setting(pool, "demo_bm_seeded").await?.is_none() {
+        seed_bm(pool, now).await?;
+    }
+    Ok(())
+}
+
+pub fn demo_bm_id(n: u64) -> String {
+    format!("{}", 9_100_000 + n)
+}
+
+/// Вымышленные игроки BattleMetrics: копии демо-игроков, «тиммейт» Ворона, «попутчик» и массовка.
+async fn seed_bm(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
+    use crate::persistence::bm_repo::{self, NewBmSession};
+    let now = floor5(now);
+    let mut rng = Rng(0xb33f_5eed_0042_1337);
+    let p = crate::infrastructure::clock::parse_ts;
+    let lo = "0000-01-01T00:00:00Z";
+    let hi = fmt_ts(now + Duration::days(1));
+    // покрытие серверов = окна, когда «приложение» работало
+    let windows: Vec<(DateTime<Utc>, DateTime<Utc>)> =
+        repo::list_coverage(pool, demo_steam_id(1).as_str(), lo, &hi).await?.iter().filter_map(|c| Some((p(&c.start_at)?, p(&c.end_at)?))).collect();
+    for (id, ..) in SERVERS {
+        let sid = format!("demo:{id}");
+        for (a, b) in &windows {
+            bm_repo::add_coverage(pool, &sid, *a, *b).await?;
+        }
+        if *id == "1" || *id == "2" {
+            bm_repo::set_watch(pool, &sid, true).await?;
+            sqlx::query("UPDATE server_watch SET last_polled_at = ?, last_success_at = ?, last_online = ? WHERE server_id = ?")
+                .bind(fmt_ts(now))
+                .bind(fmt_ts(now))
+                .bind(rng.range(40, 180))
+                .bind(&sid)
+                .execute(pool)
+                .await?;
+        }
+    }
+    let in_window = |t: DateTime<Utc>| windows.iter().find(|(a, b)| t >= *a && t < *b).map(|w| w.1);
+    let mut sessions: Vec<(String, String, DateTime<Utc>, DateTime<Utc>)> = vec![];
+    // 1) демо-игроки → игроки BM, их сессии копируются
+    for pl in PLAYERS {
+        let bm = demo_bm_id(pl.n);
+        let steam = demo_steam_id(pl.n);
+        bm_repo::upsert_player(pool, &bm, Some(pl.name), None, true).await?;
+        bm_repo::set_steam(pool, &bm, Some(steam.as_str())).await?;
+        if pl.n == 1 || pl.n == 7 {
+            bm_repo::set_tracked(pool, &bm, true).await?;
+        }
+        for a in pl.aliases {
+            bm_repo::record_name(pool, &bm, a, &fmt_ts(now - Duration::days(40))).await?;
+        }
+        for se in repo::list_sessions(pool, steam.as_str(), lo, &hi).await? {
+            let (Some(st), Some(el), Some(server)) = (p(&se.start_upper), p(&se.end_lower), se.server_id.clone()) else { continue };
+            let en = if se.is_open { now + Duration::minutes(1) } else { el };
+            sessions.push((bm.clone(), server, st, en));
+        }
+    }
+    // 2) «тиммейт» Ворона: входит/выходит вместе (±5 мин) в ~75% его сессий
+    let voron: Vec<_> = sessions.iter().filter(|s| s.0 == demo_bm_id(1)).cloned().collect();
+    bm_repo::upsert_player(pool, "9200001", Some("DEMO·Сосед"), None, true).await?;
+    bm_repo::record_name(pool, "9200001", "DEMO·neighbour", &fmt_ts(now - Duration::days(60))).await?;
+    bm_repo::upsert_player(pool, "9200002", Some("DEMO·Попутчик"), None, true).await?;
+    for (_, server, st, en) in &voron {
+        if rng.f() < 0.75 {
+            let s2 = *st + Duration::minutes(rng.range(-5, 6));
+            let e2 = if *en > now { *en } else { *en + Duration::minutes(rng.range(-6, 7)) };
+            sessions.push(("9200001".into(), server.clone(), s2, e2));
+        }
+        // «попутчик» часто на том же сервере, но заходит/выходит в другое время
+        if rng.f() < 0.6 {
+            let s3 = *st + Duration::minutes(rng.range(35, 90));
+            sessions.push(("9200002".into(), server.clone(), s3, s3 + Duration::minutes(rng.range(60, 240))));
+        }
+    }
+    // 3) массовка на серверах
+    for k in 1..=40u64 {
+        let bm = format!("{}", 9_300_000 + k);
+        bm_repo::upsert_player(pool, &bm, Some(&format!("DEMO·Игрок_{k:02}")), None, true).await?;
+        let server = format!("demo:{}", SERVERS[(k % 4) as usize].0);
+        for d in (0..90).rev() {
+            if rng.f() > 0.45 {
+                continue;
+            }
+            let day = (now - Duration::days(d)).duration_trunc(Duration::days(1)).unwrap_or(now);
+            let st = day + Duration::minutes(rng.range(8 * 60, 23 * 60));
+            sessions.push((bm.clone(), server.clone(), st, st + Duration::minutes(rng.range(30, 300))));
+        }
+    }
+    // запись: только внутри окон наблюдения, с квантованием опроса
+    for (bm, server, st, en) in sessions {
+        if st >= now {
+            continue;
+        }
+        let Some(win_end) = in_window(st) else { continue };
+        let open = en >= now;
+        let (end_lower, end_upper, end_known) = if open {
+            (now, None, false)
+        } else if en >= win_end {
+            (floor5(win_end), None, false)
+        } else {
+            (floor5(en), Some(floor5(en) + Duration::minutes(POLL_MIN)), true)
+        };
+        let start_upper = floor5(st) + Duration::minutes(POLL_MIN);
+        if end_lower <= start_upper {
+            continue;
+        }
+        bm_repo::upsert_session(
+            pool,
+            &NewBmSession {
+                bm_id: &bm,
+                server_id: &server,
+                source: "demo",
+                start_lower: floor5(st),
+                start_upper,
+                start_known: true,
+                end_lower,
+                end_upper,
+                end_known,
+                is_open: open,
+                external_id: None,
+            },
+        )
+        .await?;
+    }
+    // серверная статистика игроков BM из их сессий
+    sqlx::query(
+        "INSERT OR REPLACE INTO bm_player_servers(bm_id, server_id, server_name, online, first_seen, last_seen, time_played_secs, fetched_at)
+         SELECT s.bm_id, s.server_id, sv.name, MAX(s.is_open), MIN(s.start_upper), MAX(s.end_lower),
+                SUM(strftime('%s', s.end_lower) - strftime('%s', s.start_upper)), ?
+         FROM bm_sessions s LEFT JOIN servers sv ON sv.id = s.server_id GROUP BY s.bm_id, s.server_id",
+    )
+    .bind(fmt_ts(now))
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE bm_players SET first_seen = (SELECT MIN(start_upper) FROM bm_sessions s WHERE s.bm_id = bm_players.bm_id),
+                               last_seen = (SELECT MAX(end_lower) FROM bm_sessions s WHERE s.bm_id = bm_players.bm_id),
+                               fetched_at = ?",
+    )
+    .bind(fmt_ts(now))
+    .execute(pool)
+    .await?;
+    repo::set_setting(pool, "demo_bm_seeded", &fmt_ts(now)).await?;
+    Ok(())
+}
+
+async fn seed_base(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
     let now = floor5(now);
     let mut rng = Rng(0x5eed_1234_abcd_ef01);
 
@@ -610,5 +758,11 @@ mod tests {
         assert_eq!(non_demo, 0);
         let names: Vec<String> = sqlx::query_scalar("SELECT persona_name FROM players").fetch_all(&pool).await.unwrap();
         assert!(names.iter().all(|n| n.starts_with("DEMO·")));
+        let bm_names: Vec<String> = sqlx::query_scalar("SELECT name FROM bm_players").fetch_all(&pool).await.unwrap();
+        assert!(bm_names.len() > 40 && bm_names.iter().all(|n| n.starts_with("DEMO·")));
+        let b1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bm_sessions").fetch_one(&pool).await.unwrap();
+        seed(&pool, now).await.unwrap();
+        let b2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bm_sessions").fetch_one(&pool).await.unwrap();
+        assert_eq!(b1, b2);
     }
 }

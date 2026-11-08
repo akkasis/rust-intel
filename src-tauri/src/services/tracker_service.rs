@@ -350,6 +350,11 @@ where
                     Ok(_) => {}
                     Err(e) => tracing::error!(error = %e, "ошибка цикла трекера"),
                 }
+                match crate::services::bm_service::poll_watched(&ctx).await {
+                    Ok(ev) if !ev.is_empty() => on_events(ctx.clone(), ev),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = %e, "ошибка наблюдения за серверами"),
+                }
             }
             if now() - last_prune > Duration::hours(6) {
                 let cutoff = fmt_ts(now() - Duration::days(ctx.settings.retention_days));

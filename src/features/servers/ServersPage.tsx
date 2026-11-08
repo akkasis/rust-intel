@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ExternalLink, RefreshCw, Star } from "lucide-react";
+import { Eye, ExternalLink, RefreshCw, Star, Users } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Server } from "@/lib/types";
 import { PROVIDER_NAMES, fmtDateTime, fmtRelative } from "@/lib/format";
 import { openExternal } from "@/lib/external";
 import { useTz } from "@/app/hooks";
-import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, Input, LoadingBlock, Notice, PageHeader, ProvenanceChip, Segmented, cn } from "@/components/ui";
+import { Avatar, Badge, Button, Card, CardHeader, EmptyState, ErrorState, Input, LoadingBlock, Notice, PageHeader, ProvenanceChip, Segmented, Switch, cn } from "@/components/ui";
 import { EChart, baseOption, chartTheme } from "@/components/charts/EChart";
 
 const TRUST: Record<string, { label: string; tone: "teal" | "amber" | "danger" | "violet" | "neutral"; hint: string }> = {
@@ -23,7 +24,10 @@ export function ServersPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [followed, setFollowed] = useState<"all" | "followed">("all");
-  const [sel, setSel] = useState<string | null>(null);
+  const [params] = useSearchParams();
+  const [sel, setSel] = useState<string | null>(params.get("id"));
+  const watch = useQuery({ queryKey: ["server-watch"], queryFn: api.serverWatch });
+  const watched = new Set((watch.data ?? []).filter((w) => w.enabled).map((w) => w.server_id));
   const servers = useQuery({ queryKey: ["servers"], queryFn: () => api.servers() });
   const refresh = useMutation({
     mutationFn: () => api.refreshServers(q || undefined),
@@ -85,7 +89,10 @@ export function ServersPage() {
                           </button>
                         </td>
                         <td className="max-w-0 px-2 py-2">
-                          <div className="truncate font-medium">{s.name}</div>
+                          <div className="flex items-center gap-1.5 truncate font-medium">
+                            {s.name}
+                            {watched.has(s.id) && <Eye className="size-3.5 shrink-0 text-teal" aria-label="наблюдается" />}
+                          </div>
                           <div className="truncate text-[11px] text-faint">
                             {s.address ?? "адрес не указан"} · {s.country ?? "—"} · {PROVIDER_NAMES[s.provider] ?? s.provider}
                           </div>
@@ -107,7 +114,12 @@ export function ServersPage() {
             </div>
           )}
         </Card>
-        {current && <ServerDetail s={current} />}
+        {current && (
+          <div className="space-y-4">
+            <ServerDetail s={current} />
+            <OnlineNow s={current} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -179,6 +191,63 @@ function ServerDetail({ s }: { s: Server }) {
           </div>
         </dl>
         <Notice tone="info">История онлайна сервера — агрегат по серверу. Она не показывает, какие игроки были на сервере.</Notice>
+      </div>
+    </Card>
+  );
+}
+
+function OnlineNow({ s }: { s: Server }) {
+  const tz = useTz();
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["server-online", s.id], queryFn: () => api.serverOnline(s.id), retry: false, refetchInterval: 60_000 });
+  const watch = useMutation({
+    mutationFn: (v: boolean) => api.setServerWatch(s.id, v),
+    onSuccess: (_, v) => {
+      qc.invalidateQueries({ queryKey: ["server-watch"] });
+      qc.invalidateQueries({ queryKey: ["server-online", s.id] });
+      toast.success(v ? "Наблюдение включено: онлайн сервера будет записываться каждые пару минут" : "Наблюдение выключено");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const [f, setF] = useState("");
+  const list = (q.data?.players ?? []).filter((p) => !f || p.name.toLowerCase().includes(f.toLowerCase()));
+  return (
+    <Card>
+      <CardHeader
+        title="Онлайн сейчас"
+        icon={<Users className="size-4" />}
+        subtitle={q.data ? `${q.data.players.length} игроков · ${fmtRelative(q.data.fetched_at)}` : "Кто на сервере прямо сейчас"}
+        actions={
+          <label className="flex items-center gap-2 text-xs text-muted" title="Записывать онлайн сервера, чтобы видеть входы/выходы всех игроков и находить тиммейтов">
+            Наблюдать
+            <Switch checked={!!q.data?.watched} onChange={(v) => watch.mutate(v)} label="Наблюдать за сервером" disabled={watch.isPending} />
+          </label>
+        }
+      />
+      <div className="p-3">
+        {q.isLoading && <LoadingBlock rows={3} />}
+        {q.error && <Notice tone="warning">{q.error.message}</Notice>}
+        {q.data?.note && <Notice tone="info" className="mb-2">{q.data.note}</Notice>}
+        {q.data && q.data.players.length > 0 && (
+          <>
+            <Input value={f} onChange={(e) => setF(e.target.value)} placeholder="Фильтр по нику" className="mb-2 h-7 text-xs" aria-label="Фильтр игроков" />
+            <ul className="max-h-[420px] divide-y divide-line overflow-y-auto">
+              {list.map((p) => (
+                <li key={p.bm_id}>
+                  <Link to={`/bm/${p.bm_id}`} className="flex items-center gap-2.5 px-1 py-1.5 hover:bg-raised">
+                    <Avatar name={p.name} size={22} />
+                    <span className="min-w-0 flex-1 truncate text-[13px]">{p.name}</span>
+                    {p.tracked && <Badge tone="teal">отслеживается</Badge>}
+                    <span className="text-[11px] text-faint num" title={p.since_known ? "Время входа (по опросам)" : "Был онлайн уже при начале наблюдения"}>
+                      {p.since ? `${p.since_known ? "с" : "до"} ${fmtDateTime(p.since, tz)}` : ""}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {q.data && q.data.players.length === 0 && <EmptyState title="Никого онлайн" />}
       </div>
     </Card>
   );
