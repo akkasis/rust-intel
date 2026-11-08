@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import {
   Activity,
   Ban,
+  BookOpen,
   ChevronsLeft,
   ChevronsRight,
   Gauge,
@@ -34,6 +35,7 @@ const NAV = [
   { to: "/servers", label: "Серверы", icon: Server },
   { to: "/integrations", label: "Интеграции", icon: Plug },
   { to: "/settings", label: "Настройки", icon: Settings },
+  { to: "/help", label: "Инструкция", icon: BookOpen },
 ];
 
 export function AppShell() {
@@ -97,7 +99,7 @@ export function AppShell() {
                 key={n.to}
                 to={n.to}
                 end={n.end}
-                title={`${n.label} (Alt+${i + 1})`}
+                title={i < 9 ? `${n.label} (Alt+${i + 1})` : n.label}
                 className={({ isActive }) =>
                   cn(
                     "group flex h-8 items-center gap-2.5 rounded-md text-[13px] font-medium transition-colors",

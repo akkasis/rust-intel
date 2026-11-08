@@ -37,9 +37,14 @@ export function DashboardPage() {
         title="Обзор"
         subtitle={d.tracker.last_cycle_at ? `Последний цикл трекера ${fmtRelative(d.tracker.last_cycle_at)} · интервал ${d.tracker.interval_secs} с` : "Трекер ещё не выполнял опрос в этой сессии"}
         actions={
-          <Link to="/search">
-            <Button variant="primary">Найти игрока</Button>
-          </Link>
+          <>
+            <Link to="/help">
+              <Button>Инструкция</Button>
+            </Link>
+            <Link to="/search">
+              <Button variant="primary">Найти игрока</Button>
+            </Link>
+          </>
         }
       />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">

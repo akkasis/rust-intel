@@ -58,3 +58,11 @@ test("командная палитра Ctrl+K", async ({ page }) => {
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: "DEMO·Клещ" })).toBeVisible();
 });
+
+test("инструкция открывается и ищется", async ({ page }) => {
+  await page.getByRole("link", { name: "Инструкция" }).first().click();
+  await expect(page.getByRole("heading", { name: "Быстрый старт" })).toBeVisible();
+  await page.getByLabel("Поиск по инструкции").fill("telegram");
+  await expect(page.getByRole("heading", { name: "Уведомления Windows и Telegram" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Быстрый старт" })).toHaveCount(0);
+});

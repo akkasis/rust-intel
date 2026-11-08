@@ -6,6 +6,16 @@
 RID не является инструментом слежки за людьми, не выносит вердиктов о читерстве и всегда показывает источник, свежесть и
 покрытие данных. Отсутствие игрока на наблюдаемых серверах ≠ отсутствие в Rust.
 
+## Скачать (Windows)
+
+Страница релиза **latest** в GitHub (обновляется при каждом push в `main`):
+
+* `RustIntelligence.exe` — портативная версия: скачать и запустить, установка не нужна;
+* `RustIntelligence-setup.exe` — установщик с ярлыками.
+
+Нужен Microsoft Edge WebView2 Runtime (встроен в Windows 11 и обновлённую Windows 10).
+Подробная инструкция — внутри приложения, раздел «Инструкция».
+
 ## Стек
 
 Tauri 2 · Rust (edition 2024, Tokio, reqwest, sqlx/SQLite WAL) · React 19 + TypeScript strict · Vite · React Router ·
