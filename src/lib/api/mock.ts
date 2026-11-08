@@ -23,6 +23,7 @@ const defaultSettings: AppSettings = {
   risk_indicators: true,
   reduced_motion: "system",
   density: "compact",
+  auto_watch_servers: true,
   notifications: { windows: false, telegram: false, telegram_chat_id: null, quiet_start: null, quiet_end: null, events: {} },
 };
 
@@ -117,6 +118,26 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
       const q = String(args.query ?? "").toLowerCase();
       const list = f.list_bm_players as { name: string | null; bm_id: string; tracked: boolean }[];
       return list.filter((p) => (!q || (p.name ?? "").toLowerCase().includes(q) || p.bm_id === q) && (!args.trackedOnly || p.tracked));
+    }
+    case "get_bm_routine":
+    case "get_bm_post_wipe":
+    case "get_bm_alts": {
+      const r = (f[cmd] as Record<string, unknown>)[String(args.bmId)];
+      if (r === undefined) throw { kind: "not_found", message: "Нет данных" };
+      return r;
+    }
+    case "list_bm_clans":
+      return f.list_bm_clans;
+    case "get_bm_clan_report": {
+      const preset = (args.range as { preset: string }).preset === "7d" ? "7d" : "30d";
+      const r = (f.get_bm_clan_report as Record<string, unknown>)[`${args.id}:${preset}`];
+      if (!r) throw { kind: "not_found", message: "Клан не найден" };
+      return r;
+    }
+    case "get_server_insights": {
+      const r = (f.get_server_insights as Record<string, unknown>)[String(args.id)];
+      if (!r) throw { kind: "not_found", message: "Нет данных" };
+      return r;
     }
     case "list_server_watch":
       return f.list_server_watch;

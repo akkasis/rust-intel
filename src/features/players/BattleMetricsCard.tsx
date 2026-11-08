@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ExternalLink, Link2, Link2Off, RefreshCw, Search } from "lucide-react";
 import { api } from "@/lib/api";
@@ -36,8 +36,11 @@ export function BattleMetricsCard({ p }: { p: PlayerProfile }) {
         subtitle="Серверы, время на них, онлайн и сессии"
         actions={
           link ? (
-            <Badge tone={link.match_evidence === "exact_identifier" ? "teal" : "amber"} title={link.match_evidence === "exact_identifier" ? "Совпадение по SteamID" : "Привязано вами вручную"}>
-              {link.match_evidence === "exact_identifier" ? "по SteamID" : "вручную"}
+            <Badge
+              tone={link.match_evidence === "exact_identifier" ? "teal" : "amber"}
+              title={{ exact_identifier: "Совпадение по SteamID", auto_name_match: "Связано автоматически по нику — проверьте", user_confirmed: "Привязано вами вручную" }[link.match_evidence] ?? ""}
+            >
+              {{ exact_identifier: "по SteamID", auto_name_match: "авто по нику — проверьте", user_confirmed: "вручную" }[link.match_evidence] ?? link.match_evidence}
             </Badge>
           ) : (
             <Badge>не привязан</Badge>
@@ -57,6 +60,7 @@ export function BattleMetricsCard({ p }: { p: PlayerProfile }) {
                 Страница игрока BM → тиммейты, сессии
               </Link>
             </div>
+            <BmMates bmId={link.external_id} />
             <div className="flex flex-wrap gap-2">
               <Button size="sm" onClick={() => refresh.mutate()} loading={refresh.isPending}>
                 <RefreshCw className="size-3.5" /> Загрузить данные
@@ -149,5 +153,38 @@ function LinkDialog({ open, onClose, p, onLinked }: { open: boolean; onClose: ()
         <Notice tone="warning">Ники не уникальны. Перед привязкой откройте кандидата на сайте и сверьте серверы и время активности. Привязка помечается как «вручную».</Notice>
       </div>
     </Dialog>
+  );
+}
+
+/** Короткий список тиммейтов из BattleMetrics (данные подгружаются автоматически). */
+function BmMates({ bmId }: { bmId: string }) {
+  const q = useQuery({ queryKey: ["bm-player", bmId], queryFn: () => api.bmPlayer(bmId) });
+  if (q.isLoading) return <div className="text-xs text-faint">Загружаю данные BattleMetrics…</div>;
+  if (!q.data) return null;
+  const v = q.data;
+  const mates = v.teammates.filter((t) => t.confidence !== "low").slice(0, 6);
+  return (
+    <div className="space-y-1.5 rounded-md border border-line bg-panel-2 p-2">
+      <div className="flex flex-wrap gap-x-3 text-xs text-muted">
+        <span>серверов: {v.servers.length}</span>
+        <span>сессий: {v.sessions_total}</span>
+        {v.online_now && <span className="text-lime">онлайн: {v.online_now.server_name ?? v.online_now.server_id}</span>}
+      </div>
+      <div className="text-[11px] text-faint uppercase">Возможные тиммейты</div>
+      {mates.length === 0 ? (
+        <div className="text-xs text-muted">Пока не найдены — копятся при наблюдении за серверами игрока.</div>
+      ) : (
+        <ul className="flex flex-wrap gap-1.5">
+          {mates.map((t) => (
+            <li key={t.player}>
+              <Link to={`/bm/${t.player}`} className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-xs hover:border-teal/50">
+                {t.name ?? t.player}
+                <span className="text-faint">· {t.joined_together}×</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

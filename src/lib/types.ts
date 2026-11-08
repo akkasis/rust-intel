@@ -405,6 +405,7 @@ export interface AppSettings {
   risk_indicators: boolean;
   reduced_motion: "system" | "on" | "off";
   density: "compact" | "comfortable";
+  auto_watch_servers: boolean;
   notifications: NotificationSettings;
 }
 
@@ -598,4 +599,90 @@ export interface WatchRow {
   last_success_at: Iso | null;
   last_error: string | null;
   last_online: number | null;
+}
+
+// ---------------------------------------------------------------- Insights
+
+export interface Routine {
+  sessions: number;
+  sessions_with_known_start: number;
+  start_hours: number[];
+  usual_start: [number, number] | null;
+  median_session_secs: number | null;
+  avg_daily_secs_active_days: number | null;
+  active_days: number;
+  weekday_avg_secs: number | null;
+  weekend_avg_secs: number | null;
+  forecast: { at: Iso; p: number | null; sample_days: number }[];
+  next_likely_online: Iso | null;
+  summary: string[];
+}
+
+export interface PostWipe {
+  cycles: { server_id: string; wipe_at: Iso; first_login_delay_secs: number | null; daily_secs: number[] }[];
+  avg_daily_secs: number[];
+  median_first_login_delay_secs: number | null;
+  joins_on_wipe_rate: number | null;
+  main_server_by_week: [string, string, number][];
+  summary: string[];
+}
+
+export interface AltCandidate {
+  bm_id: string;
+  name: string | null;
+  first_seen: Iso | null;
+  sync_with_group: number;
+  with_whom: string[];
+  schedule_similarity: number;
+  target_inactive_since: Iso | null;
+  score: number;
+  reasons: string[];
+}
+
+export interface Clan {
+  id: number;
+  name: string;
+  color: string;
+  notify: boolean;
+  min_gather: number;
+  created_at: Iso;
+  updated_at: Iso;
+  member_count: number;
+}
+
+export interface ClanMember {
+  bm_id: string;
+  name: string | null;
+  provenance: string;
+  added_at: Iso;
+  tracked: boolean;
+  is_demo: boolean;
+  online_server: string | null;
+}
+
+export interface ClanReport {
+  clan: Clan;
+  members: ClanMember[];
+  coverage: number[];
+  analysis: SquadAnalysis | null;
+  online_now: number;
+  timezone: string;
+}
+
+export interface ServerPlayerStat {
+  bm_id: string;
+  name: string | null;
+  secs: number;
+  sessions: number;
+  first_seen: Iso;
+  tracked: boolean;
+}
+
+export interface ServerInsights {
+  server_id: string;
+  days: number;
+  top: ServerPlayerStat[];
+  newcomers: ServerPlayerStat[];
+  observed_since: Iso | null;
+  note: string | null;
 }

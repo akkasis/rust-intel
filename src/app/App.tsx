@@ -19,6 +19,7 @@ import { SettingsPage } from "@/features/settings/SettingsPage";
 import { HelpPage } from "@/features/help/HelpPage";
 import { BmHomePage } from "@/features/bm/BmHomePage";
 import { BmPlayerPage } from "@/features/bm/BmPlayerPage";
+import { ClansPage } from "@/features/clans/ClansPage";
 
 const router = createHashRouter([
   {
@@ -40,6 +41,8 @@ const router = createHashRouter([
       { path: "help", element: <HelpPage /> },
       { path: "bm", element: <BmHomePage /> },
       { path: "bm/:bmId", element: <BmPlayerPage /> },
+      { path: "clans", element: <ClansPage /> },
+      { path: "clans/:id", element: <ClansPage /> },
       { path: "*", element: <Navigate to="/" replace /> },
     ],
   },

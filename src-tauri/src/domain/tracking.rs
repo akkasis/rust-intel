@@ -16,6 +16,8 @@ pub enum EventKind {
     BanChange,
     SourceUnavailable,
     SourceRestored,
+    /// Несколько участников клана BM зашли почти одновременно.
+    ClanGathering,
 }
 
 impl EventKind {
@@ -31,9 +33,10 @@ impl EventKind {
             Self::BanChange => "ban_change",
             Self::SourceUnavailable => "source_unavailable",
             Self::SourceRestored => "source_restored",
+            Self::ClanGathering => "clan_gathering",
         }
     }
-    pub const ALL: [EventKind; 10] = [
+    pub const ALL: [EventKind; 11] = [
         Self::FirstSeen,
         Self::JoinedObservedServer,
         Self::LeftObservedServer,
@@ -44,6 +47,7 @@ impl EventKind {
         Self::BanChange,
         Self::SourceUnavailable,
         Self::SourceRestored,
+        Self::ClanGathering,
     ];
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.as_str() == s)
@@ -60,6 +64,7 @@ impl EventKind {
             Self::BanChange => "Изменение банов",
             Self::SourceUnavailable => "Источник недоступен",
             Self::SourceRestored => "Источник восстановлен",
+            Self::ClanGathering => "Клан заходит",
         }
     }
 }

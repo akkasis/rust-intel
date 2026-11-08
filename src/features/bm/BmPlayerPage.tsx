@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight, ExternalLink, Link2, Radar, RefreshCw, UsersRound } from "lucide-react";
@@ -11,8 +11,9 @@ import { useIsDemo, useTz } from "@/app/hooks";
 import { Avatar, Badge, Button, Card, CardHeader, EmptyState, ErrorState, Input, Kpi, LoadingBlock, Notice, Segmented, Select, Switch, Tabs, cn } from "@/components/ui";
 import { ActivityHeatmap } from "@/components/charts/Heatmap";
 import { TypicalOfflineCard } from "@/features/activity/ActivityView";
+import { AltsTab, PostWipeTab, RoutineTab } from "./InsightTabs";
 
-type Tab = "overview" | "teammates" | "sessions" | "activity";
+type Tab = "overview" | "teammates" | "routine" | "wipe" | "alts" | "sessions" | "activity";
 
 const CONF: Record<Teammate["confidence"], { label: string; tone: "teal" | "amber" | "neutral" }> = {
   high: { label: "высокая", tone: "teal" },
@@ -91,12 +92,18 @@ export function BmPlayerPage() {
         tabs={[
           { value: "overview", label: "Обзор" },
           { value: "teammates", label: "Тиммейты", count: v.teammates.length },
+          { value: "routine", label: "Распорядок" },
+          { value: "wipe", label: "После вайпа" },
+          { value: "alts", label: "Новый аккаунт?" },
           { value: "sessions", label: "Сессии", count: v.sessions_total },
           { value: "activity", label: "Активность" },
         ]}
       />
       {tab === "overview" && <Overview v={v} />}
       {tab === "teammates" && <Teammates v={v} />}
+      {tab === "routine" && <RoutineTab bmId={p.bm_id} />}
+      {tab === "wipe" && <PostWipeTab bmId={p.bm_id} />}
+      {tab === "alts" && <AltsTab bmId={p.bm_id} />}
       {tab === "sessions" && <Sessions sessions={v.sessions} total={v.sessions_total} />}
       {tab === "activity" && <BmActivity bmId={p.bm_id} />}
     </div>
@@ -211,6 +218,13 @@ function SteamLink({ v }: { v: BmPlayerView }) {
 
 function Teammates({ v }: { v: BmPlayerView }) {
   const tz = useTz();
+  const nav = useNavigate();
+  const qc = useQueryClient();
+  const mkClan = useMutation({
+    mutationFn: () => api.clanFromTeammates(v.player.bm_id),
+    onSuccess: (id) => (qc.invalidateQueries({ queryKey: ["clans"] }), toast.success("Клан создан"), nav(`/clans/${id}`)),
+    onError: (e) => toast.error(e.message),
+  });
   const [open, setOpen] = useState<string | null>(null);
   const [minConf, setMinConf] = useState<"all" | "medium">("all");
   const list = v.teammates.filter((t) => minConf === "all" || t.confidence !== "low");
@@ -220,7 +234,14 @@ function Teammates({ v }: { v: BmPlayerView }) {
         title="Возможные тиммейты"
         icon={<UsersRound className="size-4" />}
         subtitle={v.teammates_note}
-        actions={<Segmented label="Уверенность" value={minConf} onChange={setMinConf} options={[{ value: "all", label: "Все" }, { value: "medium", label: "Средняя+" }]} />}
+        actions={
+          <>
+            <Button size="sm" onClick={() => mkClan.mutate()} loading={mkClan.isPending} disabled={!v.teammates.some((t) => t.confidence !== "low")} title="Игрок + тиммейты со средней/высокой уверенностью">
+              <UsersRound className="size-3.5" /> Собрать клан
+            </Button>
+            <Segmented label="Уверенность" value={minConf} onChange={setMinConf} options={[{ value: "all", label: "Все" }, { value: "medium", label: "Средняя+" }]} />
+          </>
+        }
       />
       {v.watched_servers === 0 && !v.player.is_demo && (
         <Notice tone="warning" className="m-3">

@@ -63,7 +63,7 @@ mod tests {
         let mut bmp = Map::new();
         let mut bma = Map::new();
         let mut ids: Vec<String> = PLAYERS.iter().map(|p| demo_bm_id(p.n)).collect();
-        ids.extend(["9200001".to_string(), "9200002".to_string(), "9300001".to_string()]);
+        ids.extend(["9200001".to_string(), "9200002".to_string(), "9200003".to_string(), "9300001".to_string()]);
         for id in &ids {
             let mut view = bm_service::player_view(&ctx, id, false).await.unwrap();
             view.sessions.truncate(80);
@@ -75,6 +75,33 @@ mod tests {
                 );
             }
         }
+        use crate::services::insights_service as ins;
+        let (mut rt, mut pw, mut alts) = (Map::new(), Map::new(), Map::new());
+        for id in &ids {
+            rt.insert(id.clone(), v(&ins::player_routine(&ctx, id, Some("Europe/Moscow")).await.unwrap()));
+            pw.insert(id.clone(), v(&ins::player_post_wipe(&ctx, id, Some("Europe/Moscow")).await.unwrap()));
+            alts.insert(id.clone(), v(&ins::alt_candidates(&ctx, id).await.unwrap()));
+        }
+        m.insert("get_bm_routine".into(), Value::Object(rt));
+        m.insert("get_bm_post_wipe".into(), Value::Object(pw));
+        m.insert("get_bm_alts".into(), Value::Object(alts));
+        let clans = ins::list_clans(&ctx).await.unwrap();
+        let mut cr = Map::new();
+        for c in &clans {
+            for preset in ["7d", "30d"] {
+                cr.insert(
+                    format!("{}:{preset}", c.id),
+                    v(&ins::clan_report(&ctx, c.id, &RangeSpec { preset: preset.into(), from: None, to: None }, Some("Europe/Moscow")).await.unwrap()),
+                );
+            }
+        }
+        m.insert("list_bm_clans".into(), v(&clans));
+        m.insert("get_bm_clan_report".into(), Value::Object(cr));
+        let mut si = Map::new();
+        for s in repo::list_servers(&ctx.pool, None, false, 50).await.unwrap() {
+            si.insert(s.id.clone(), v(&ins::server_insights(&ctx, &s.id, 7).await.unwrap()));
+        }
+        m.insert("get_server_insights".into(), Value::Object(si));
         m.insert("get_bm_player".into(), Value::Object(bmp));
         m.insert("get_bm_activity".into(), Value::Object(bma));
         let mut online = Map::new();

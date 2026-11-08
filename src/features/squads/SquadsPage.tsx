@@ -304,7 +304,7 @@ function SquadDetail({ id, onEdit, onDeleted }: { id: number; onEdit: (s: { id: 
   );
 }
 
-function squadCells(r: SquadReport): HeatCell[] {
+export function squadCells(r: SquadReport): HeatCell[] {
   return (r.analysis?.hours ?? []).map((h) => {
     const known = h.some_online_secs + h.all_offline_secs;
     return {
@@ -319,7 +319,7 @@ function squadCells(r: SquadReport): HeatCell[] {
   });
 }
 
-function Concurrency({ secs }: { secs: number[] }) {
+export function Concurrency({ secs }: { secs: number[] }) {
   const option = useMemo(() => {
     const t = chartTheme();
     return {
@@ -334,7 +334,7 @@ function Concurrency({ secs }: { secs: number[] }) {
   return <EChart option={option} height={170} label="Распределение времени по числу одновременно онлайн участников" />;
 }
 
-function SquadTimeline({ r, tz }: { r: SquadReport; tz: string }) {
+export function SquadTimeline({ r, tz }: { r: SquadReport; tz: string }) {
   const a = r.analysis!;
   const end = new Date(a.range_end).getTime();
   const start = Math.max(new Date(a.range_start).getTime(), end - 7 * 86_400_000);

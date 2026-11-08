@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Eye, ExternalLink, RefreshCw, Star, Users } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Server } from "@/lib/types";
-import { PROVIDER_NAMES, fmtDateTime, fmtRelative } from "@/lib/format";
+import { PROVIDER_NAMES, fmtDateTime, fmtDuration, fmtRelative } from "@/lib/format";
 import { openExternal } from "@/lib/external";
 import { useTz } from "@/app/hooks";
 import { Avatar, Badge, Button, Card, CardHeader, EmptyState, ErrorState, Input, LoadingBlock, Notice, PageHeader, ProvenanceChip, Segmented, Switch, cn } from "@/components/ui";
@@ -118,6 +118,7 @@ export function ServersPage() {
           <div className="space-y-4">
             <ServerDetail s={current} />
             <OnlineNow s={current} />
+            <TopAndNewcomers s={current} />
           </div>
         )}
       </div>
@@ -248,6 +249,48 @@ function OnlineNow({ s }: { s: Server }) {
           </>
         )}
         {q.data && q.data.players.length === 0 && <EmptyState title="Никого онлайн" />}
+      </div>
+    </Card>
+  );
+}
+
+function TopAndNewcomers({ s }: { s: Server }) {
+  const tz = useTz();
+  const [days, setDays] = useState<"1" | "7" | "30">("7");
+  const [tab, setTab] = useState<"top" | "new">("top");
+  const q = useQuery({ queryKey: ["server-insights", s.id, days], queryFn: () => api.serverInsights(s.id, Number(days)) });
+  const list = tab === "top" ? q.data?.top : q.data?.newcomers;
+  return (
+    <Card>
+      <CardHeader
+        title={tab === "top" ? "Топ по времени" : "Новички на сервере"}
+        subtitle="По наблюдению программы за этим сервером"
+        actions={
+          <>
+            <Segmented label="Список" value={tab} onChange={setTab} options={[{ value: "top", label: "Топ" }, { value: "new", label: "Новички" }]} />
+            <Segmented label="Период" value={days} onChange={setDays} options={[{ value: "1", label: "24ч" }, { value: "7", label: "7д" }, { value: "30", label: "30д" }]} />
+          </>
+        }
+      />
+      <div className="p-3">
+        {q.isLoading && <LoadingBlock rows={3} />}
+        {q.data?.note && <Notice tone="info" className="mb-2">{q.data.note}</Notice>}
+        {list && list.length === 0 && <EmptyState title="Пока пусто" text="Включите «Наблюдать» — данные начнут копиться." />}
+        {list && list.length > 0 && (
+          <ul className="max-h-[360px] divide-y divide-line overflow-y-auto">
+            {list.map((p, i) => (
+              <li key={p.bm_id}>
+                <Link to={`/bm/${p.bm_id}`} className="flex items-center gap-2.5 px-1 py-1.5 hover:bg-raised">
+                  <span className="w-5 text-right text-[11px] text-faint num">{i + 1}</span>
+                  <Avatar name={p.name} size={22} />
+                  <span className="min-w-0 flex-1 truncate text-[13px]">{p.name ?? p.bm_id}</span>
+                  {p.tracked && <Badge tone="teal">отслеживается</Badge>}
+                  <span className="text-[11px] text-muted num">{tab === "top" ? `${fmtDuration(p.secs)} · ${p.sessions} сесс.` : `с ${fmtDateTime(p.first_seen, tz)}`}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </Card>
   );

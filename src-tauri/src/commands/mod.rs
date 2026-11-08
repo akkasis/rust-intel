@@ -15,7 +15,7 @@ use crate::services::export::ImportResult;
 use crate::services::player_service::{PlayerProfile, SearchOutcome};
 use crate::services::server_service::{PopulationReport, RefreshResult};
 use crate::services::tracker_service::TrackerStatus;
-use crate::services::{RangeSpec, analytics_service, bm_service, export, notifications, player_service, server_service, tracker_service};
+use crate::services::{RangeSpec, analytics_service, bm_service, export, insights_service, notifications, player_service, server_service, tracker_service};
 use crate::state::AppState;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -203,6 +203,61 @@ pub async fn set_server_watch(state: St<'_>, id: String, enabled: bool) -> AppRe
 #[tauri::command]
 pub async fn list_server_watch(state: St<'_>) -> AppResult<Vec<crate::persistence::bm_repo::WatchRow>> {
     bm_service::list_watch(&state.ctx().await?).await
+}
+
+#[tauri::command]
+pub async fn get_bm_routine(state: St<'_>, bm_id: String, timezone: Option<String>) -> AppResult<crate::domain::insights::Routine> {
+    insights_service::player_routine(&state.ctx().await?, &bm_id, timezone.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn get_bm_post_wipe(state: St<'_>, bm_id: String, timezone: Option<String>) -> AppResult<crate::domain::insights::PostWipe> {
+    insights_service::player_post_wipe(&state.ctx().await?, &bm_id, timezone.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn get_bm_alts(state: St<'_>, bm_id: String) -> AppResult<Vec<insights_service::AltCandidate>> {
+    insights_service::alt_candidates(&state.ctx().await?, &bm_id).await
+}
+
+#[tauri::command]
+pub async fn list_bm_clans(state: St<'_>) -> AppResult<Vec<insights_service::ClanRow>> {
+    insights_service::list_clans(&state.ctx().await?).await
+}
+
+#[tauri::command]
+pub async fn save_bm_clan(state: St<'_>, id: Option<i64>, name: String, color: String, notify: bool, min_gather: i64) -> AppResult<i64> {
+    insights_service::save_clan(&state.ctx().await?, id, &name, &color, notify, min_gather).await
+}
+
+#[tauri::command]
+pub async fn delete_bm_clan(state: St<'_>, id: i64) -> AppResult<()> {
+    insights_service::delete_clan(&state.ctx().await?, id).await
+}
+
+#[tauri::command]
+pub async fn add_bm_clan_member(state: St<'_>, id: i64, bm_id: String) -> AppResult<()> {
+    insights_service::add_clan_member(&state.ctx().await?, id, &bm_id, "manual").await
+}
+
+#[tauri::command]
+pub async fn remove_bm_clan_member(state: St<'_>, id: i64, bm_id: String) -> AppResult<()> {
+    insights_service::remove_clan_member(&state.ctx().await?, id, &bm_id).await
+}
+
+#[tauri::command]
+pub async fn bm_clan_from_teammates(state: St<'_>, bm_id: String) -> AppResult<i64> {
+    insights_service::clan_from_teammates(&state.ctx().await?, &bm_id).await
+}
+
+#[tauri::command]
+pub async fn get_bm_clan_report(state: St<'_>, id: i64, range: RangeSpec, timezone: Option<String>) -> AppResult<insights_service::ClanReport> {
+    insights_service::clan_report(&state.ctx().await?, id, &range, timezone.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn get_server_insights(state: St<'_>, id: String, days: Option<i64>) -> AppResult<insights_service::ServerInsights> {
+    insights_service::server_insights(&state.ctx().await?, &id, days.unwrap_or(7)).await
 }
 
 #[tauri::command]

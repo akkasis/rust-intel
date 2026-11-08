@@ -80,6 +80,15 @@ pub async fn refresh(ctx: &Ctx, query: Option<&str>) -> AppResult<RefreshResult>
             }
         }
     }
+    if ctx.bmru.is_configured()
+        && let Ok(w) = ctx.bmru.wipes("past").await
+    {
+        for (sid, at, fact) in w {
+            if fact {
+                crate::services::insights_service::record_wipe(&ctx.pool, &format!("battlemetrics_ru:{sid}"), &fmt_ts(at), "battlemetrics_ru").await?;
+            }
+        }
+    }
     // Вайпы для отслеживаемых серверов battlemetrics.ru
     if ctx.bmru.is_configured()
         && let Ok(w) = ctx.bmru.wipes("upcoming").await

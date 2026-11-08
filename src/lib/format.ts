@@ -99,6 +99,7 @@ export const EVENT_TITLES: Record<string, string> = {
   ban_change: "Изменение банов",
   source_unavailable: "Источник недоступен",
   source_restored: "Источник восстановлен",
+  clan_gathering: "Клан заходит",
 };
 
 export const PROVIDER_NAMES: Record<string, string> = {

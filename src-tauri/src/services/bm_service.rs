@@ -108,6 +108,7 @@ pub async fn poll_watched(ctx: &Ctx) -> AppResult<Vec<i64>> {
             }
         }
     }
+    out.extend(crate::services::insights_service::check_clan_gatherings(ctx).await?);
     Ok(out)
 }
 

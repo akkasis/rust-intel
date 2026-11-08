@@ -154,6 +154,9 @@ function SettingsForm({ initial }: { initial: AppSettings }) {
                 ))}
               </Select>
             </Row>
+            <Row label="Автонаблюдение за серверами" hint="При связи игрока с BattleMetrics включать наблюдение за его серверами за неделю (для тиммейтов)">
+              <Switch checked={s.auto_watch_servers} onChange={(v) => set("auto_watch_servers", v)} label="Автонаблюдение за серверами" />
+            </Row>
             <Row label="Индикаторы риска" hint="Объяснимая сумма публичных сигналов, без вердиктов">
               <Switch checked={s.risk_indicators} onChange={(v) => set("risk_indicators", v)} label="Индикаторы риска" />
             </Row>

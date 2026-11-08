@@ -296,6 +296,9 @@ pub async fn upsert_server(pool: &SqlitePool, s: &ServerRow) -> R<()> {
     .bind(s.is_demo)
     .execute(pool)
     .await?;
+    if let Some(w) = &s.last_wipe_at {
+        crate::services::insights_service::record_wipe(pool, &s.id, w, &s.provider).await?;
+    }
     Ok(())
 }
 

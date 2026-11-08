@@ -58,6 +58,8 @@ pub struct AppSettings {
     pub risk_indicators: bool,
     pub reduced_motion: String,
     pub density: String,
+    /// Автоматически включать наблюдение за серверами привязанных игроков BM.
+    pub auto_watch_servers: bool,
     pub notifications: NotificationSettings,
 }
 
@@ -75,6 +77,7 @@ impl Default for AppSettings {
             risk_indicators: true,
             reduced_motion: "system".into(),
             density: "compact".into(),
+            auto_watch_servers: true,
             notifications: NotificationSettings::default(),
         }
     }

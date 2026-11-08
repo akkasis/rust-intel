@@ -92,6 +92,8 @@ mod tests {
         assert_eq!(fnv1a(&m1), 0x3792b5b23031bf13, "0001_init.sql изменён — создайте новую миграцию вместо правки");
         let m2 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/0002_player_server_stats.sql")).unwrap();
         assert_eq!(fnv1a(&m2), 0x452fc54d638cc1f3, "0002 изменён — создайте новую миграцию вместо правки");
+        let m3 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/0003_battlemetrics_players.sql")).unwrap();
+        assert_eq!(fnv1a(&m3), 0x6731d05fb994c1ea, "0003 изменён — создайте новую миграцию вместо правки");
     }
 
     /// Обновление приложения: база предыдущей версии (только миграция 0001) открывается новой версией,

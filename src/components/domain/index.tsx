@@ -52,6 +52,10 @@ export function EventItem({ e, tz, compact }: { e: EventRow; tz: string; compact
             <Link to={`/players/${e.steam_id}`} className="font-medium hover:text-teal">
               {e.persona_name ?? e.steam_id}
             </Link>
+          ) : typeof details.clan_id === "number" ? (
+            <Link to={`/clans/${details.clan_id}`} className="font-medium hover:text-teal">
+              {String(details.name)}
+            </Link>
           ) : typeof details.bm_id === "string" ? (
             <Link to={`/bm/${details.bm_id}`} className="font-medium hover:text-teal">
               {String(details.name ?? details.bm_id)}
@@ -60,6 +64,7 @@ export function EventItem({ e, tz, compact }: { e: EventRow; tz: string; compact
             <span className="font-medium">{PROVIDER_NAMES[String(details.provider ?? e.provider)] ?? e.provider}</span>
           )}
           <span className="text-muted">{EVENT_TITLES[e.kind] ?? e.kind}</span>
+          {e.kind === "clan_gathering" && Array.isArray(details.members) && <span className="text-xs text-faint">{(details.members as string[]).join(", ")}</span>}
           {e.kind === "name_changed" && typeof details.from === "string" && (
             <span className="text-xs text-faint">
               {String(details.from)} → {String(details.to)}

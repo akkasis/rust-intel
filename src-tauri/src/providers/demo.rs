@@ -211,6 +211,84 @@ pub async fn seed(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Err
     if repo::get_setting(pool, "demo_bm_seeded").await?.is_none() {
         seed_bm(pool, now).await?;
     }
+    if repo::get_setting(pool, "demo_v4_seeded").await?.is_none() {
+        seed_v4(pool, now).await?;
+    }
+    Ok(())
+}
+
+/// 0.4: вайпы по четвергам, клан BM и вымышленный «новый аккаунт» рядом с группой Ворона.
+async fn seed_v4(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
+    use crate::persistence::bm_repo::{self, NewBmSession};
+    let now = floor5(now);
+    let mut rng = Rng(0x0a17_5eed_4444_0001);
+    for (id, ..) in SERVERS {
+        let sid = format!("demo:{id}");
+        let mut d = (now - Duration::days(91)).duration_trunc(Duration::days(1)).unwrap_or(now) + Duration::hours(16);
+        let mut last = None;
+        while d < now {
+            if d.format("%u").to_string() == "4" {
+                crate::services::insights_service::record_wipe(pool, &sid, &fmt_ts(d), "demo").await?;
+                last = Some(d);
+            }
+            d += Duration::days(1);
+        }
+        if let Some(l) = last {
+            sqlx::query("UPDATE servers SET last_wipe_at = ? WHERE id = ?").bind(fmt_ts(l)).bind(&sid).execute(pool).await?;
+        }
+    }
+    // «новый аккаунт»: появился 12 дней назад и заходит вместе с Клещом
+    bm_repo::upsert_player(pool, "9200003", Some("DEMO·Новый_акк"), None, true).await?;
+    let klesh = bm_repo::list_sessions_player(pool, &demo_bm_id(2), &fmt_ts(now - Duration::days(12)), &fmt_ts(now), 500).await?;
+    for s in klesh {
+        if rng.f() > 0.85 {
+            continue;
+        }
+        let (Some(st), Some(el)) = (crate::infrastructure::clock::parse_ts(&s.start_upper), crate::infrastructure::clock::parse_ts(&s.end_lower)) else {
+            continue;
+        };
+        let st2 = st + Duration::minutes(rng.range(-1, 2) * 5);
+        let en2 = el + Duration::minutes(rng.range(-1, 2) * 5);
+        bm_repo::upsert_session(
+            pool,
+            &NewBmSession {
+                bm_id: "9200003",
+                server_id: &s.server_id,
+                source: "demo",
+                start_lower: st2 - Duration::minutes(POLL_MIN),
+                start_upper: st2,
+                start_known: s.start_known,
+                end_lower: if s.is_open { now } else { en2 },
+                end_upper: if s.is_open { None } else { Some(en2 + Duration::minutes(POLL_MIN)) },
+                end_known: s.end_known,
+                is_open: s.is_open,
+                external_id: None,
+            },
+        )
+        .await?;
+    }
+    sqlx::query("UPDATE bm_players SET first_seen = (SELECT MIN(start_upper) FROM bm_sessions WHERE bm_id = '9200003'), last_seen = (SELECT MAX(end_lower) FROM bm_sessions WHERE bm_id = '9200003'), fetched_at = ? WHERE bm_id = '9200003'")
+        .bind(fmt_ts(now))
+        .execute(pool)
+        .await?;
+    let ts = fmt_ts(now);
+    let clan =
+        sqlx::query("INSERT INTO bm_clans(name, color, notify, min_gather, created_at, updated_at) VALUES ('[DEMO] Северяне (BM)', '#a3e635', 1, 2, ?, ?)")
+            .bind(&ts)
+            .bind(&ts)
+            .execute(pool)
+            .await?
+            .last_insert_rowid();
+    for (bm, prov) in [(demo_bm_id(1), "demo"), (demo_bm_id(2), "demo"), (demo_bm_id(3), "demo"), ("9200001".to_string(), "teammate_suggestion")] {
+        sqlx::query("INSERT OR IGNORE INTO bm_clan_members(clan_id, bm_id, provenance, added_at) VALUES (?, ?, ?, ?)")
+            .bind(clan)
+            .bind(bm)
+            .bind(prov)
+            .bind(&ts)
+            .execute(pool)
+            .await?;
+    }
+    repo::set_setting(pool, "demo_v4_seeded", &ts).await?;
     Ok(())
 }
 

@@ -80,3 +80,18 @@ test("BattleMetrics: игрок, тиммейты, онлайн сервера",
   await expect(page.getByText("Онлайн сейчас")).toBeVisible();
   await expect(page.getByRole("switch", { name: "Наблюдать за сервером" })).toBeChecked();
 });
+
+test("инсайты: распорядок, после вайпа, новый аккаунт, клан, топ сервера", async ({ page }) => {
+  await page.goto("/#/bm/9100001");
+  await page.getByRole("tab", { name: "Распорядок" }).click();
+  await expect(page.getByText("Прогноз на 24 часа")).toBeVisible();
+  await page.getByRole("tab", { name: "После вайпа" }).click();
+  await expect(page.getByText("Сколько играет по дням после вайпа")).toBeVisible();
+  await page.getByRole("tab", { name: "Новый аккаунт?" }).click();
+  await expect(page.getByRole("link", { name: "DEMO·Новый_акк" })).toBeVisible();
+  await page.getByRole("link", { name: "Кланы" }).click();
+  await expect(page.getByRole("heading", { name: "[DEMO] Северяне (BM)" })).toBeVisible();
+  await expect(page.getByText("Совместная шкала")).toBeVisible();
+  await page.goto("/#/servers?id=demo%3A1");
+  await expect(page.getByText("Топ по времени")).toBeVisible();
+});
