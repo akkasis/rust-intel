@@ -733,6 +733,7 @@ export interface RustPlusServer {
   paired_at: Iso;
   last_connected_at: Iso | null;
   last_error: string | null;
+  server_id: string | null;
   status: {
     connected: boolean;
     via: string | null;

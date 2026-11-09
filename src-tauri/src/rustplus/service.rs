@@ -106,6 +106,7 @@ pub struct ServerRow {
     pub paired_at: String,
     pub last_connected_at: Option<String>,
     pub last_error: Option<String>,
+    pub server_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -375,23 +376,27 @@ async fn listener_loop(app: AppHandle, state: Arc<AppState>) {
 }
 
 async fn on_paired(app: AppHandle, state: Arc<AppState>, p: fcm::Pairing) -> Result<(), String> {
-    if !client::valid_target(&p.ip, p.port) {
+    let ip = p.ip.clone().unwrap_or_default();
+    let port = p.port.unwrap_or(0);
+    if p.server_id.is_none() && !client::valid_target(&ip, port) {
         return Err("недопустимый адрес сервера".into());
     }
-    let id = format!("{}:{}", p.ip, p.port);
+    let id = p.server_id.clone().unwrap_or_else(|| format!("{ip}:{port}"));
     state.secrets.set_raw(&token_account(&id), &p.player_token.to_string())?;
     let pool = pool(&state).await.ok_or("база недоступна")?;
     sqlx::query(
-        "INSERT INTO rustplus_servers(id, name, ip, port, player_id, enabled, death_alerts_chat, death_alerts_local, paired_at)
-         VALUES (?, ?, ?, ?, ?, 1, 1, 1, ?)
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name, player_id = excluded.player_id, enabled = 1, paired_at = excluded.paired_at, last_error = NULL",
+        "INSERT INTO rustplus_servers(id, name, ip, port, player_id, enabled, death_alerts_chat, death_alerts_local, paired_at, server_id)
+         VALUES (?, ?, ?, ?, ?, 1, 1, 1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, player_id = excluded.player_id, enabled = 1, paired_at = excluded.paired_at,
+            server_id = COALESCE(excluded.server_id, rustplus_servers.server_id), last_error = NULL",
     )
     .bind(&id)
     .bind(&p.name)
-    .bind(&p.ip)
-    .bind(p.port as i64)
+    .bind(&ip)
+    .bind(port as i64)
     .bind(p.player_id.to_string())
     .bind(fmt_ts(now()))
+    .bind(&p.server_id)
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -444,7 +449,8 @@ async fn server_loop(app: AppHandle, state: Arc<AppState>, row: ServerRow, mut o
             set_status(&id, |s| s.last_error = Some("нет токена — спарьте сервер заново в игре".into())).await;
             return;
         };
-        let err = match client::connect(&row.ip, row.port as u16).await {
+        let auth_token = auth(&state).map(|a| a.token);
+        let err = match client::connect(row.server_id.as_deref(), auth_token.as_deref(), &row.ip, row.port.clamp(0, 65535) as u16).await {
             Ok((ws, via)) => {
                 backoff = 5;
                 set_status(&id, |s| {

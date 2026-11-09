@@ -162,6 +162,7 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
             paired_at: new Date().toISOString(),
             last_connected_at: new Date().toISOString(),
             last_error: null,
+            server_id: "2ae66e35-ffee-436d-bd57-f3a107386f7a",
             status: {
               connected: true,
               via: "direct",

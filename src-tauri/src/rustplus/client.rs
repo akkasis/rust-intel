@@ -33,24 +33,51 @@ fn tls_connector() -> Connector {
     Connector::Rustls(Arc::new(cfg))
 }
 
-pub async fn connect(ip: &str, port: u16) -> Result<(Ws, &'static str), String> {
-    if !valid_target(ip, port) {
-        return Err("недопустимый адрес сервера".into());
+/// base64url без выравнивания (RFC 4648 §5).
+pub fn base64url(s: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes())
+}
+
+/// Подключение через сокет Facepunch по GUID сервера: токен входа Rust+ передаётся
+/// как WebSocket-подпротокол «rustplus.auth.v1, <base64url(token)>» (как в RustPlusApi / Rust+ Desktop).
+pub async fn connect_companion(server_id: &str, auth_token: &str) -> Result<Ws, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    if !super::fcm::is_guid(server_id) {
+        return Err("некорректный ID сервера".into());
     }
-    let direct = format!("ws://{ip}:{port}");
-    match tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(direct.as_str())).await {
-        Ok(Ok((ws, _))) => return Ok((ws, "direct")),
-        Ok(Err(e)) => tracing::info!(error = %e, "Rust+: прямое подключение не удалось, пробую прокси Facepunch"),
-        Err(_) => tracing::info!("Rust+: таймаут прямого подключения, пробую прокси Facepunch"),
+    let mut req = format!("wss://companion-rust.facepunch.com/socket/{server_id}").into_client_request().map_err(|e| e.to_string())?;
+    let proto = format!("rustplus.auth.v1, {}", base64url(auth_token));
+    req.headers_mut().insert("Sec-WebSocket-Protocol", proto.parse().map_err(|_| "некорректный токен входа".to_string())?);
+    match tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async_tls_with_config(req, None, false, Some(tls_connector()))).await {
+        Ok(Ok((ws, _))) => Ok(ws),
+        Ok(Err(tokio_tungstenite::tungstenite::Error::Http(r))) if matches!(r.status().as_u16(), 401 | 403) => {
+            Err(format!("Facepunch отклонил вход Rust+ (HTTP {}) — войдите через Steam заново: «Отключить Rust+» → «Подключить Rust+»", r.status().as_u16()))
+        }
+        Ok(Err(e)) => Err(format!("сокет Facepunch: {e}")),
+        Err(_) => Err("таймаут подключения к сокету Facepunch".into()),
     }
-    let proxy = format!("wss://companion-rust.facepunch.com/game/{ip}/{port}");
-    match tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async_tls_with_config(proxy.as_str(), None, false, Some(tls_connector())))
-        .await
-    {
-        Ok(Ok((ws, _))) => Ok((ws, "facepunch_proxy")),
-        Ok(Err(e)) => Err(format!("не удалось подключиться: {e}")),
-        Err(_) => Err("таймаут подключения".into()),
+}
+
+/// Подключение: сначала сокет Facepunch (если есть GUID сервера), затем прямое ws://ip:port для старых спариваний.
+/// Старый прокси /game/{ip}/{port} не используется — Facepunch отвечает на него 418.
+pub async fn connect(server_id: Option<&str>, auth_token: Option<&str>, ip: &str, port: u16) -> Result<(Ws, &'static str), String> {
+    let mut last = String::from("нет маршрута подключения");
+    if let (Some(id), Some(tok)) = (server_id, auth_token) {
+        match connect_companion(id, tok).await {
+            Ok(ws) => return Ok((ws, "facepunch_socket")),
+            Err(e) => last = e,
+        }
     }
+    if valid_target(ip, port) {
+        let direct = format!("ws://{ip}:{port}");
+        match tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(direct.as_str())).await {
+            Ok(Ok((ws, _))) => return Ok((ws, "direct")),
+            Ok(Err(e)) => last = format!("{last}; прямое: {e}"),
+            Err(_) => last = format!("{last}; прямое: таймаут"),
+        }
+    }
+    Err(last)
 }
 
 pub struct Session {
@@ -188,5 +215,19 @@ mod wire_tests {
         }
         let chat = server.await.unwrap();
         assert_eq!(chat.as_deref(), Some("☠ Клещ умер в N16 (21:05)"));
+    }
+}
+
+#[cfg(test)]
+mod live_socket {
+    /// Проверка маршрута Facepunch /socket/{serverId}: только рукопожатие и getInfo с пустым токеном.
+    /// cargo test --lib live_socket_route -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_socket_route() {
+        let none = super::connect_companion("2ae66e35-ffee-436d-bd57-f3a107386f7a", "").await;
+        println!("без токена: {:?}", none.err());
+        let r = super::connect_companion("2ae66e35-ffee-436d-bd57-f3a107386f7a", "fake-token").await;
+        println!("с поддельным токеном: {:?}", r.err());
     }
 }

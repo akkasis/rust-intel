@@ -376,8 +376,11 @@ where
 pub struct Pairing {
     pub kind: String,
     pub name: String,
-    pub ip: String,
-    pub port: u16,
+    /// GUID сервера в Facepunch (новые спаривания) — основной способ подключения.
+    pub server_id: Option<String>,
+    /// IP/порт — только у старых спариваний.
+    pub ip: Option<String>,
+    pub port: Option<u16>,
     pub player_id: u64,
     pub player_token: i32,
 }
@@ -446,13 +449,19 @@ pub fn parse_pairing_detailed(p: &PushData) -> Result<Pairing, String> {
     };
     let is_pairing = p.data.get("channelId").map(String::as_str) == Some("pairing")
         || p.data.get("gcm.notification.android_channel_id").map(String::as_str) == Some("pairing")
-        || (body.get("playerToken").is_some() && body.get("ip").is_some());
+        || body.get("playerToken").is_some();
     if !is_pairing {
         return Err("не спаривание".into());
     }
-    let ip = field_text(&body["ip"]).filter(|s| !s.is_empty()).ok_or("нет ip")?;
-    let port_s = field_text(&body["port"]).ok_or("нет port")?;
-    let port: u16 = port_s.parse::<f64>().ok().filter(|v| *v >= 1.0 && *v <= 65535.0).map(|v| v as u16).ok_or(format!("плохой port «{port_s}»"))?;
+    let server_id = field_text(&body["id"]).filter(|s| is_guid(s));
+    let ip = field_text(&body["ip"]).filter(|s| !s.is_empty());
+    let port = match field_text(&body["port"]) {
+        Some(port_s) => Some(port_s.parse::<f64>().ok().filter(|v| *v >= 1.0 && *v <= 65535.0).map(|v| v as u16).ok_or(format!("плохой port «{port_s}»"))?),
+        None => None,
+    };
+    if server_id.is_none() && (ip.is_none() || port.is_none()) {
+        return Err("нет ни ID сервера, ни ip/port".into());
+    }
     let pid_s = field_text(&body["playerId"]).ok_or("нет playerId")?;
     let player_id: u64 = pid_s.parse().map_err(|_| format!("плохой playerId «{pid_s}»"))?;
     let tok_s = field_text(&body["playerToken"]).ok_or("нет playerToken")?;
@@ -473,11 +482,17 @@ pub fn parse_pairing_detailed(p: &PushData) -> Result<Pairing, String> {
     Ok(Pairing {
         kind: field_text(&body["type"]).unwrap_or_else(|| "server".into()),
         name: crate::infrastructure::redact::sanitize_text(body["name"].as_str().unwrap_or("Сервер"), 120),
+        server_id,
         ip,
         port,
         player_id,
         player_token,
     })
+}
+
+pub fn is_guid(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 5 && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(n, p)| p.len() == *n && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 #[cfg(test)]
@@ -508,15 +523,20 @@ mod tests {
         // реальные переводы строк в описании + числа вместо строк + токен как беззнаковое
         let raw = "{\"id\":\"2ae66e35\",\"name\":\"Rustoria.co - EU East Medium\",\"desc\":\"Wipe Schedule:\n\tMap - Bi-Weekly\",\"img\":\"\",\"logo\":\"\",\"url\":\"https://rustoria.co\",\"ip\":\"185.206.151.10\",\"port\":28083,\"type\":\"server\",\"playerId\":\"76561197960287930\",\"playerToken\":3000000000}";
         let p = parse_pairing_detailed(&mk(raw)).unwrap();
-        assert_eq!(p.ip, "185.206.151.10");
-        assert_eq!(p.port, 28083);
+        assert_eq!(p.ip.as_deref(), Some("185.206.151.10"));
+        assert_eq!(p.port, Some(28083));
         assert_eq!(p.player_token, 3000000000u32 as i32);
         // экранированные \\n и строки
         let esc = r#"{"name":"S","desc":"a\\n\\tb","ip":"1.2.3.4","port":"28082","type":"server","playerId":"76561197960287930","playerToken":"-5"}"#;
         assert_eq!(parse_pairing_detailed(&mk(esc)).unwrap().player_token, -5);
         // понятная причина при отсутствии поля
         let bad = r#"{"name":"S","ip":"1.2.3.4","type":"server","playerId":"76561197960287930","playerToken":"1"}"#;
-        assert_eq!(parse_pairing_detailed(&mk(bad)).unwrap_err(), "нет port");
+        assert_eq!(parse_pairing_detailed(&mk(bad)).unwrap_err(), "нет ни ID сервера, ни ip/port");
+        // новый формат Facepunch: только GUID сервера (как у Rustoria)
+        let newfmt = r#"{"id":"2ae66e35-ffee-436d-bd57-f3a107386f7a","name":"Rustoria.co - EU East Medium","desc":"Wipe Schedule:\n\tMap","img":"","logo":"","url":"http://rustoria.co","playerId":"76561198932658360","playerToken":"-987654","type":"server"}"#;
+        let p = parse_pairing_detailed(&mk(newfmt)).unwrap();
+        assert_eq!(p.server_id.as_deref(), Some("2ae66e35-ffee-436d-bd57-f3a107386f7a"));
+        assert!(p.ip.is_none() && p.port.is_none());
     }
 
     #[test]
@@ -528,7 +548,7 @@ mod tests {
             r#"{"id":"x","name":"Test Server","desc":"","img":"","logo":"","url":"","ip":"203.0.113.5","port":"28082","type":"server","playerId":"76561197960287930","playerToken":"-1234567"}"#.into(),
         );
         let p = parse_pairing(&PushData { persistent_id: None, data }).unwrap();
-        assert_eq!(p.port, 28082);
+        assert_eq!(p.port, Some(28082));
         assert_eq!(p.player_token, -1234567);
         assert_eq!(p.player_id, 76561197960287930);
         let mut other = std::collections::HashMap::new();

@@ -114,7 +114,7 @@ function ServerCard({ s, demo }: { s: RustPlusServer; demo: boolean }) {
       <CardHeader
         title={s.name}
         icon={st.connected ? <Wifi className="size-4 text-lime" /> : <WifiOff className="size-4 text-amber" />}
-        subtitle={`${s.ip}:${s.port} · ${st.connected ? `подключено${st.via === "facepunch_proxy" ? " через прокси Facepunch" : ""}` : "не подключено"}${st.last_update ? ` · обновлено ${fmtRelative(st.last_update)}` : ""}`}
+        subtitle={`${s.server_id ? "через сокет Facepunch" : `${s.ip}:${s.port}`} · ${st.connected ? `подключено${st.via === "direct" ? " напрямую" : ""}` : "не подключено"}${st.last_update ? ` · обновлено ${fmtRelative(st.last_update)}` : ""}`}
         actions={
           <>
             <Badge tone="lime" title="Сообщено о смертях с момента запуска">
