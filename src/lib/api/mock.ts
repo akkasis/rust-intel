@@ -171,9 +171,9 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
               last_error: null,
               deaths_reported: 3,
               members: [
-                { steam_id: "1", name: "DEMO·Ворон", alive: true, online: true, grid: "N16" },
-                { steam_id: "2", name: "DEMO·Клещ", alive: false, online: true, grid: "K14" },
-                { steam_id: "3", name: "DEMO·Сова", alive: true, online: false, grid: "M15" },
+                { steam_id: "1", name: "DEMO·Ворон", alive: true, online: true, grid: "N16", last_death: null },
+                { steam_id: "2", name: "DEMO·Клещ", alive: false, online: true, grid: "K14", last_death: new Date(Date.now() - 60000).toISOString() },
+                { steam_id: "3", name: "DEMO·Сова", alive: true, online: false, grid: "M15", last_death: null },
               ],
             },
           },

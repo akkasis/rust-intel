@@ -164,6 +164,7 @@ function ServerCard({ s, demo }: { s: RustPlusServer; demo: boolean }) {
                       </span>
                     </td>
                     <td className="py-1.5">{m.alive ? <Badge tone="teal">жив</Badge> : <Badge tone="danger">мёртв</Badge>}</td>
+                    <td className="py-1.5 text-[11px] text-faint" title="Время последней смерти по данным сервера">{m.last_death ? `☠ ${fmtRelative(m.last_death)}` : ""}</td>
                     <td className="py-1.5 text-right text-muted num">{m.grid ?? "—"}</td>
                   </tr>
                 ))}

@@ -719,6 +719,7 @@ export interface RustPlusMember {
   alive: boolean;
   online: boolean;
   grid: string | null;
+  last_death: Iso | null;
 }
 
 export interface RustPlusServer {

@@ -188,7 +188,8 @@ mod wire_tests {
                                     y: Some(2000.0),
                                     is_online: Some(true),
                                     spawn_time: Some(1),
-                                    is_alive: Some(alive),
+                                    // как реальный сервер: у мёртвого isAlive не передаётся
+                                    is_alive: if alive { Some(true) } else { None },
                                     death_time: Some(if alive { 0 } else { 1234 }),
                                 }],
                             }),

@@ -31,7 +31,8 @@ pub fn snapshot(members: &[Member]) -> HashMap<u64, MemberSnap> {
                 m.steam_id?,
                 MemberSnap {
                     name: m.name.clone().unwrap_or_default(),
-                    alive: m.is_alive.unwrap_or(true),
+                    // proto2: сервер не передаёт поле со значением по умолчанию — отсутствующий isAlive = false (мёртв).
+                    alive: m.is_alive.unwrap_or(false),
                     death_time: m.death_time.unwrap_or(0),
                     x: m.x.unwrap_or(0.0),
                     y: m.y.unwrap_or(0.0),
@@ -48,15 +49,20 @@ pub fn detect(prev: Option<&HashMap<u64, MemberSnap>>, cur: &HashMap<u64, Member
     let mut out = vec![];
     for (id, c) in cur {
         let Some(p) = prev.get(id) else { continue };
-        let died = !c.alive && (p.alive || (c.death_time != 0 && c.death_time != p.death_time));
+        // Смерть: был жив → стал мёртв, ИЛИ изменилось время последней смерти
+        // (успел умереть и возродиться между опросами).
+        let new_death_time = c.death_time != 0 && c.death_time != p.death_time;
+        let died = (!c.alive && p.alive) || new_death_time;
         if died {
+            // Место: если сейчас мёртв — его текущие координаты (труп); если уже возродился — последняя позиция до смерти.
+            let (x, y) = if c.alive { (p.x, p.y) } else { (c.x, c.y) };
             out.push(Death {
                 steam_id: *id,
                 name: c.name.clone(),
                 death_time: c.death_time,
-                x: c.x,
-                y: c.y,
-                grid: map_size.and_then(|s| grid_pos(c.x as f64, c.y as f64, s as f64)),
+                x,
+                y,
+                grid: map_size.and_then(|s| grid_pos(x as f64, y as f64, s as f64)),
             });
         }
     }
@@ -99,6 +105,28 @@ mod tests {
         // тот же снимок ещё раз — без дублей
         assert!(detect(Some(&b), &b, Some(4500)).is_empty());
     }
+    #[test]
+    fn missing_is_alive_means_dead() {
+        // как присылает сервер: у мёртвого поле isAlive просто отсутствует
+        let alive = snapshot(&[m(1, true, 100, 10.0, 4380.0)]);
+        let mut dead_member = m(1, false, 200, 10.0, 4380.0);
+        dead_member.is_alive = None;
+        let dead = snapshot(&[dead_member]);
+        assert!(!dead[&1].alive);
+        assert_eq!(detect(Some(&alive), &dead, Some(4500)).len(), 1);
+    }
+
+    #[test]
+    fn quick_respawn_between_polls_is_detected_at_last_position() {
+        let before = snapshot(&[m(1, true, 100, 10.0, 4380.0)]);
+        // умер и возродился (другие координаты), deathTime сменился
+        let after = snapshot(&[m(1, true, 250, 3000.0, 100.0)]);
+        let d = detect(Some(&before), &after, Some(4500));
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].grid.as_deref(), Some("A0"), "место — последняя позиция до смерти, а не точка возрождения");
+        assert!(detect(Some(&after), &after, Some(4500)).is_empty());
+    }
+
     #[test]
     fn first_snapshot_and_respawn_do_not_alert() {
         let dead = snapshot(&[m(1, false, 500, 1.0, 1.0)]);

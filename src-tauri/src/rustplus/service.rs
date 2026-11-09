@@ -36,6 +36,8 @@ pub struct MemberView {
     pub alive: bool,
     pub online: bool,
     pub grid: Option<String>,
+    /// Время последней смерти по данным сервера (UTC).
+    pub last_death: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -493,7 +495,7 @@ async fn run_session(app: &AppHandle, state: &Arc<AppState>, row: &ServerRow, mu
     }
     let mut map_size: Option<u32> = None;
     let mut prev: Option<HashMap<u64, MemberSnap>> = None;
-    let mut tick = tokio::time::interval(Duration::from_secs(4));
+    let mut tick = tokio::time::interval(Duration::from_secs(3));
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -527,7 +529,8 @@ async fn run_session(app: &AppHandle, state: &Arc<AppState>, row: &ServerRow, mu
                     let members: Vec<MemberView> = t.members.iter().map(|mm| MemberView {
                         steam_id: mm.steam_id.unwrap_or(0).to_string(),
                         name: mm.name.clone().unwrap_or_default(),
-                        alive: mm.is_alive.unwrap_or(true),
+                        alive: mm.is_alive.unwrap_or(false),
+                        last_death: mm.death_time.filter(|t| *t > 0).and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0)).map(fmt_ts),
                         online: mm.is_online.unwrap_or(false),
                         grid: map_size.and_then(|ms| super::grid::grid_pos(mm.x.unwrap_or(-1.0) as f64, mm.y.unwrap_or(-1.0) as f64, ms as f64)),
                     }).collect();
