@@ -104,3 +104,10 @@ test("связи: друзья Steam и тиммейты без случайны
   await page.getByRole("radio", { name: /Друзья Steam/ }).click();
   await expect(page.getByText("DEMO·Новичок")).toBeVisible();
 });
+
+test("Rust+: экран команды и шаги подключения", async ({ page }) => {
+  await page.getByRole("link", { name: "Rust+ команда" }).click();
+  await expect(page.getByText("2. Вход через Steam на сайте Facepunch")).toBeVisible();
+  await expect(page.getByText("☠ Клещ умер в K14 (21:05)")).toBeVisible();
+  await expect(page.getByText("мёртв")).toBeVisible();
+});

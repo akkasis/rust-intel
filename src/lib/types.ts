@@ -710,3 +710,45 @@ export interface LinkCandidate {
   online_now: string | null;
   source_url: string;
 }
+
+// ---------------------------------------------------------------- Rust+
+
+export interface RustPlusMember {
+  steam_id: string;
+  name: string;
+  alive: boolean;
+  online: boolean;
+  grid: string | null;
+}
+
+export interface RustPlusServer {
+  id: string;
+  name: string;
+  ip: string;
+  port: number;
+  player_id: string;
+  enabled: boolean;
+  death_alerts_chat: boolean;
+  death_alerts_local: boolean;
+  paired_at: Iso;
+  last_connected_at: Iso | null;
+  last_error: string | null;
+  status: {
+    connected: boolean;
+    via: string | null;
+    map_size: number | null;
+    last_update: Iso | null;
+    last_error: string | null;
+    members: RustPlusMember[];
+    deaths_reported: number;
+  };
+}
+
+export interface RustPlusStatus {
+  device_registered: boolean;
+  steam_linked: boolean;
+  steam_id: string | null;
+  listener: "off" | "connecting" | "connected" | "reconnecting" | string;
+  servers: RustPlusServer[];
+  demo: boolean;
+}

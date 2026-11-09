@@ -100,6 +100,7 @@ export const EVENT_TITLES: Record<string, string> = {
   source_unavailable: "Источник недоступен",
   source_restored: "Источник восстановлен",
   clan_gathering: "Клан заходит",
+  teammate_died: "Тиммейт погиб",
 };
 
 export const PROVIDER_NAMES: Record<string, string> = {

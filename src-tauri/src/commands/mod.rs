@@ -282,6 +282,63 @@ pub async fn get_steam_friends(state: St<'_>, steam_id: String, refresh: Option<
 }
 
 #[tauri::command]
+pub async fn rustplus_status(state: St<'_>) -> AppResult<crate::rustplus::service::RustPlusStatus> {
+    Ok(crate::rustplus::service::status(&state).await)
+}
+
+#[tauri::command]
+pub async fn rustplus_login(app: AppHandle, state: St<'_>) -> AppResult<()> {
+    if state.config().await.mode == Some(Mode::Demo) {
+        return Err(AppError::validation("Rust+ работает только в режиме Live"));
+    }
+    crate::rustplus::service::begin_login(app, state.inner().clone()).await.map_err(|m| AppError::Internal { message: m })
+}
+
+#[tauri::command]
+pub async fn rustplus_logout(state: St<'_>) -> AppResult<()> {
+    crate::rustplus::service::logout(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rustplus_update_server(
+    app: AppHandle,
+    state: St<'_>,
+    id: String,
+    enabled: bool,
+    death_alerts_chat: bool,
+    death_alerts_local: bool,
+) -> AppResult<()> {
+    let c = state.ctx().await?;
+    sqlx::query("UPDATE rustplus_servers SET enabled = ?, death_alerts_chat = ?, death_alerts_local = ? WHERE id = ?")
+        .bind(enabled)
+        .bind(death_alerts_chat)
+        .bind(death_alerts_local)
+        .bind(&id)
+        .execute(&c.pool)
+        .await?;
+    crate::rustplus::service::stop_server(&id).await;
+    if enabled && let Some(row) = crate::rustplus::service::list_servers(&c.pool).await?.into_iter().find(|r| r.id == id) {
+        crate::rustplus::service::start_server(app, state.inner().clone(), row).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rustplus_remove_server(state: St<'_>, id: String) -> AppResult<()> {
+    let c = state.ctx().await?;
+    crate::rustplus::service::stop_server(&id).await;
+    state.secrets.delete_raw(&format!("rustplus_token_{}", id.replace([':', '.'], "_")));
+    sqlx::query("DELETE FROM rustplus_servers WHERE id = ?").bind(&id).execute(&c.pool).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rustplus_test_message(id: String) -> AppResult<()> {
+    crate::rustplus::service::send_chat(&id, "RID: проверка связи ✔").await.map_err(AppError::validation)
+}
+
+#[tauri::command]
 pub async fn set_favorite(state: St<'_>, steam_id: String, favorite: bool) -> AppResult<()> {
     let c = state.ctx().await?;
     player_service::ensure_known_player(&c, &steam_id).await?;

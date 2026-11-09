@@ -139,6 +139,44 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
       if (!r) throw { kind: "not_found", message: "Нет данных" };
       return r;
     }
+    case "rustplus_status":
+      return {
+        device_registered: false,
+        steam_linked: false,
+        steam_id: null,
+        listener: "off",
+        demo: true,
+        servers: [
+          {
+            id: "198.51.100.1:28082",
+            name: "[DEMO] Северный Форпост 2x",
+            ip: "198.51.100.1",
+            port: 28082,
+            player_id: "76561202060265729",
+            enabled: true,
+            death_alerts_chat: true,
+            death_alerts_local: true,
+            paired_at: new Date().toISOString(),
+            last_connected_at: new Date().toISOString(),
+            last_error: null,
+            status: {
+              connected: true,
+              via: "direct",
+              map_size: 4500,
+              last_update: new Date().toISOString(),
+              last_error: null,
+              deaths_reported: 3,
+              members: [
+                { steam_id: "1", name: "DEMO·Ворон", alive: true, online: true, grid: "N16" },
+                { steam_id: "2", name: "DEMO·Клещ", alive: false, online: true, grid: "K14" },
+                { steam_id: "3", name: "DEMO·Сова", alive: true, online: false, grid: "M15" },
+              ],
+            },
+          },
+        ],
+      };
+    case "rustplus_login":
+      throw { kind: "validation", message: "Rust+ работает только в режиме Live (в настольном приложении)" };
     case "list_server_watch":
       return f.list_server_watch;
     case "get_server_population": {

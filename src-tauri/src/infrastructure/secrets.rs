@@ -36,6 +36,7 @@ pub enum SecretBackend {
 
 pub struct SecretStore {
     memory: Mutex<HashMap<SecretKey, String>>,
+    raw: Mutex<HashMap<String, String>>,
     use_keyring: bool,
 }
 
@@ -45,11 +46,11 @@ impl SecretStore {
         if !use_keyring {
             tracing::warn!("системное хранилище секретов недоступно — ключи будут храниться только в памяти");
         }
-        Self { memory: Mutex::new(HashMap::new()), use_keyring }
+        Self { memory: Mutex::new(HashMap::new()), raw: Mutex::new(HashMap::new()), use_keyring }
     }
     /// Для тестов: без обращения к системному хранилищу.
     pub fn memory_only() -> Self {
-        Self { memory: Mutex::new(HashMap::new()), use_keyring: false }
+        Self { memory: Mutex::new(HashMap::new()), raw: Mutex::new(HashMap::new()), use_keyring: false }
     }
     pub fn backend(&self) -> SecretBackend {
         if self.use_keyring { SecretBackend::OsKeyring } else { SecretBackend::MemoryOnly }
@@ -84,6 +85,48 @@ impl SecretStore {
             }
         }
         Ok(SecretBackend::MemoryOnly)
+    }
+
+    /// Произвольный секрет по имени (для токенов Rust+). Хранится так же, как ключи API.
+    pub fn get_raw(&self, account: &str) -> Option<String> {
+        if let Some(v) = self.raw.lock().ok()?.get(account).cloned() {
+            return Some(v);
+        }
+        if !self.use_keyring {
+            return None;
+        }
+        let v = keyring::Entry::new(SERVICE, account).ok()?.get_password().ok()?;
+        if let Ok(mut m) = self.raw.lock() {
+            m.insert(account.to_string(), v.clone());
+        }
+        Some(v)
+    }
+
+    pub fn set_raw(&self, account: &str, value: &str) -> Result<SecretBackend, String> {
+        if value.is_empty() || value.len() > 2000 {
+            return Err("Недопустимое значение секрета".into());
+        }
+        if let Ok(mut m) = self.raw.lock() {
+            m.insert(account.to_string(), value.to_string());
+        }
+        if self.use_keyring {
+            match keyring::Entry::new(SERVICE, account).and_then(|e| e.set_password(value)) {
+                Ok(()) => return Ok(SecretBackend::OsKeyring),
+                Err(e) => tracing::warn!(error = %e, "не удалось сохранить секрет"),
+            }
+        }
+        Ok(SecretBackend::MemoryOnly)
+    }
+
+    pub fn delete_raw(&self, account: &str) {
+        if let Ok(mut m) = self.raw.lock() {
+            m.remove(account);
+        }
+        if self.use_keyring
+            && let Ok(e) = keyring::Entry::new(SERVICE, account)
+        {
+            let _ = e.delete_credential();
+        }
     }
 
     pub fn delete(&self, key: SecretKey) {

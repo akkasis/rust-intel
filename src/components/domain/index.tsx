@@ -64,6 +64,11 @@ export function EventItem({ e, tz, compact }: { e: EventRow; tz: string; compact
             <span className="font-medium">{PROVIDER_NAMES[String(details.provider ?? e.provider)] ?? e.provider}</span>
           )}
           <span className="text-muted">{EVENT_TITLES[e.kind] ?? e.kind}</span>
+          {e.kind === "teammate_died" && typeof details.name === "string" && (
+            <span className="text-xs text-faint">
+              {String(details.name)} · {typeof details.grid === "string" ? details.grid : "вне сетки"} · {String(details.server ?? "")}
+            </span>
+          )}
           {e.kind === "clan_gathering" && Array.isArray(details.members) && <span className="text-xs text-faint">{(details.members as string[]).join(", ")}</span>}
           {e.kind === "name_changed" && typeof details.from === "string" && (
             <span className="text-xs text-faint">

@@ -18,6 +18,8 @@ pub enum EventKind {
     SourceRestored,
     /// Несколько участников клана BM зашли почти одновременно.
     ClanGathering,
+    /// Тиммейт погиб (Rust+).
+    TeammateDied,
 }
 
 impl EventKind {
@@ -34,9 +36,10 @@ impl EventKind {
             Self::SourceUnavailable => "source_unavailable",
             Self::SourceRestored => "source_restored",
             Self::ClanGathering => "clan_gathering",
+            Self::TeammateDied => "teammate_died",
         }
     }
-    pub const ALL: [EventKind; 11] = [
+    pub const ALL: [EventKind; 12] = [
         Self::FirstSeen,
         Self::JoinedObservedServer,
         Self::LeftObservedServer,
@@ -48,6 +51,7 @@ impl EventKind {
         Self::SourceUnavailable,
         Self::SourceRestored,
         Self::ClanGathering,
+        Self::TeammateDied,
     ];
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.as_str() == s)
@@ -65,6 +69,7 @@ impl EventKind {
             Self::SourceUnavailable => "Источник недоступен",
             Self::SourceRestored => "Источник восстановлен",
             Self::ClanGathering => "Клан заходит",
+            Self::TeammateDied => "Тиммейт погиб",
         }
     }
 }

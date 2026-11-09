@@ -20,6 +20,7 @@ import { HelpPage } from "@/features/help/HelpPage";
 import { BmHomePage } from "@/features/bm/BmHomePage";
 import { BmPlayerPage } from "@/features/bm/BmPlayerPage";
 import { ClansPage } from "@/features/clans/ClansPage";
+import { RustPlusPage } from "@/features/rustplus/RustPlusPage";
 
 const router = createHashRouter([
   {
@@ -42,6 +43,7 @@ const router = createHashRouter([
       { path: "bm", element: <BmHomePage /> },
       { path: "bm/:bmId", element: <BmPlayerPage /> },
       { path: "clans", element: <ClansPage /> },
+      { path: "rustplus", element: <RustPlusPage /> },
       { path: "clans/:id", element: <ClansPage /> },
       { path: "*", element: <Navigate to="/" replace /> },
     ],

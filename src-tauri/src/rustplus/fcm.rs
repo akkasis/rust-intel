@@ -1,0 +1,424 @@
+//! Регистрация «устройства» Rust+ для push-уведомлений (как телефон с приложением Rust+) и приём
+//! уведомлений по протоколу MCS (mtalk.google.com:5228). Порт liamcottle/push-receiver (AndroidFCM).
+//! Конфигурация Firebase — публичная конфигурация приложения Rust+ Companion (используется rustplus.js).
+
+use super::proto::*;
+use prost::Message;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const API_KEY: &str = "AIzaSyB5y2y-Tzqb4-I4Qnlsh_9naYv_TD8pCvY";
+const PROJECT_ID: &str = "rust-companion-app";
+const GCM_SENDER_ID: &str = "976529667804";
+const GMS_APP_ID: &str = "1:976529667804:android:d6f1ddeb4403b338fea619";
+const ANDROID_PACKAGE: &str = "com.facepunch.rust.companion";
+const ANDROID_CERT: &str = "E28D05345FB78A7A1A63D70F4A302DBF426CA5AD";
+const EXPO_PROJECT_ID: &str = "49451aca-a822-41e6-ad59-955718d0ff9c";
+const FIREBASE_CLIENT: &str = "android-min-sdk/23 fire-core/20.0.0 device-name/a21snnxx device-brand/samsung device-model/a21s android-installer/com.android.vending fire-android/30 fire-installations/17.0.0 fire-fcm/22.0.0 android-platform/ kotlin/1.9.23 android-target-sdk/34";
+
+pub const MCS_VERSION: u8 = 41;
+pub const TAG_HEARTBEAT_PING: u8 = 0;
+pub const TAG_HEARTBEAT_ACK: u8 = 1;
+pub const TAG_LOGIN_REQUEST: u8 = 2;
+pub const TAG_LOGIN_RESPONSE: u8 = 3;
+pub const TAG_CLOSE: u8 = 4;
+pub const TAG_DATA_MESSAGE: u8 = 8;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FcmCredentials {
+    pub android_id: String,
+    pub security_token: String,
+    pub fcm_token: String,
+    pub expo_token: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FcmError {
+    #[error("HTTP: {0}")]
+    Http(String),
+    #[error("Ответ: {0}")]
+    Bad(String),
+    #[error("Сеть: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Протокол: {0}")]
+    Decode(#[from] prost::DecodeError),
+}
+
+fn http() -> reqwest::Client {
+    reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().expect("client")
+}
+
+fn h(e: reqwest::Error) -> FcmError {
+    FcmError::Http(crate::infrastructure::redact::redact(&e.to_string()))
+}
+
+/// Android checkin → (android_id, security_token).
+pub async fn checkin() -> Result<(u64, u64), FcmError> {
+    let req = AndroidCheckinRequest {
+        id: None,
+        checkin: AndroidCheckinProto {
+            r#type: Some(3), // DEVICE_CHROME_BROWSER
+            chrome_build: Some(ChromeBuildProto { platform: Some(2), chrome_version: Some("63.0.3234.0".into()), channel: Some(1) }),
+        },
+        security_token: None,
+        version: Some(3),
+        user_serial_number: Some(0),
+    };
+    let body = http()
+        .post("https://android.clients.google.com/checkin")
+        .header("Content-Type", "application/x-protobuf")
+        .body(req.encode_to_vec())
+        .send()
+        .await
+        .map_err(h)?
+        .error_for_status()
+        .map_err(h)?
+        .bytes()
+        .await
+        .map_err(h)?;
+    let r = AndroidCheckinResponse::decode(body.as_ref())?;
+    match (r.android_id, r.security_token) {
+        (Some(a), Some(s)) if a != 0 => Ok((a, s)),
+        _ => Err(FcmError::Bad("checkin без android_id".into())),
+    }
+}
+
+fn firebase_fid() -> String {
+    use base64::Engine;
+    let mut b: [u8; 17] = rand::random();
+    b[0] = 0b0111_0000 | (b[0] & 0b0000_1111);
+    base64::engine::general_purpose::STANDARD_NO_PAD.encode(b)
+}
+
+async fn firebase_install() -> Result<String, FcmError> {
+    let v: serde_json::Value = http()
+        .post(format!("https://firebaseinstallations.googleapis.com/v1/projects/{PROJECT_ID}/installations"))
+        .header("X-Android-Package", ANDROID_PACKAGE)
+        .header("X-Android-Cert", ANDROID_CERT)
+        .header("x-firebase-client", FIREBASE_CLIENT)
+        .header("x-firebase-client-log-type", "3")
+        .header("x-goog-api-key", API_KEY)
+        .header("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 11; SM-A217F Build/RP1A.200720.012)")
+        .json(&serde_json::json!({"fid": firebase_fid(), "appId": GMS_APP_ID, "authVersion": "FIS_v2", "sdkVersion": "a:17.0.0"}))
+        .send()
+        .await
+        .map_err(h)?
+        .json()
+        .await
+        .map_err(h)?;
+    v["authToken"]["token"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| FcmError::Bad(format!("Firebase installation: {}", v.to_string().chars().take(200).collect::<String>())))
+}
+
+async fn register3(android_id: u64, security_token: u64, install_token: &str) -> Result<String, FcmError> {
+    let form = [
+        ("device", android_id.to_string()),
+        ("app", ANDROID_PACKAGE.into()),
+        ("cert", ANDROID_CERT.into()),
+        ("app_ver", "1".into()),
+        ("X-subtype", GCM_SENDER_ID.into()),
+        ("X-app_ver", "1".into()),
+        ("X-osv", "29".into()),
+        ("X-cliv", "fiid-21.1.1".into()),
+        ("X-gmsv", "220217001".into()),
+        ("X-scope", "*".into()),
+        ("X-Goog-Firebase-Installations-Auth", install_token.into()),
+        ("X-gms_app_id", GMS_APP_ID.into()),
+        ("X-Firebase-Client", FIREBASE_CLIENT.into()),
+        ("X-Firebase-Client-Log-Type", "1".into()),
+        ("X-app_ver_name", "1".into()),
+        ("target_ver", "31".into()),
+        ("sender", GCM_SENDER_ID.into()),
+    ];
+    let body = serde_urlencoded_form(&form);
+    for attempt in 0..5 {
+        let text = http()
+            .post("https://android.clients.google.com/c2dm/register3")
+            .header("Authorization", format!("AidLogin {android_id}:{security_token}"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body.clone())
+            .send()
+            .await
+            .map_err(h)?
+            .text()
+            .await
+            .map_err(h)?;
+        if !text.contains("Error") {
+            if let Some(token) = text.split_once('=').map(|x| x.1.trim().to_string()).filter(|t| !t.is_empty()) {
+                return Ok(token);
+            }
+        }
+        tracing::warn!(attempt, "register3: {}", text.chars().take(80).collect::<String>());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err(FcmError::Bad("GCM register3 не удался".into()))
+}
+
+fn serde_urlencoded_form(pairs: &[(&str, String)]) -> String {
+    let mut s = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in pairs {
+        s.append_pair(k, v);
+    }
+    s.finish()
+}
+
+async fn expo_token(fcm_token: &str) -> Result<String, FcmError> {
+    let v: serde_json::Value = http()
+        .post("https://exp.host/--/api/v2/push/getExpoPushToken")
+        .json(&serde_json::json!({
+            "type": "fcm",
+            "deviceId": uuid::Uuid::new_v4().to_string(),
+            "development": false,
+            "appId": ANDROID_PACKAGE,
+            "deviceToken": fcm_token,
+            "projectId": EXPO_PROJECT_ID,
+        }))
+        .send()
+        .await
+        .map_err(h)?
+        .json()
+        .await
+        .map_err(h)?;
+    v["data"]["expoPushToken"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| FcmError::Bad(format!("Expo: {}", v.to_string().chars().take(200).collect::<String>())))
+}
+
+/// Полная регистрация устройства (без входа Steam).
+pub async fn register_device() -> Result<FcmCredentials, FcmError> {
+    let install = firebase_install().await?;
+    let (android_id, security_token) = checkin().await?;
+    let fcm_token = register3(android_id, security_token, &install).await?;
+    let expo = expo_token(&fcm_token).await?;
+    Ok(FcmCredentials { android_id: android_id.to_string(), security_token: security_token.to_string(), fcm_token, expo_token: expo })
+}
+
+/// Регистрирует устройство в Facepunch для аккаунта Steam (AuthToken со страницы входа Rust+).
+pub async fn register_with_facepunch(auth_token: &str, expo_token: &str) -> Result<(), FcmError> {
+    let r = http()
+        .post("https://companion-rust.facepunch.com/api/push/register")
+        .json(&serde_json::json!({"AuthToken": auth_token, "DeviceId": "rid-desktop", "PushKind": 3, "PushToken": expo_token}))
+        .send()
+        .await
+        .map_err(h)?;
+    if r.status().is_success() { Ok(()) } else { Err(FcmError::Bad(format!("Facepunch push/register: HTTP {}", r.status().as_u16()))) }
+}
+
+// ------------------------------------------------------------------ MCS
+
+fn varint(mut v: usize, out: &mut Vec<u8>) {
+    loop {
+        let mut b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if v == 0 {
+            break;
+        }
+    }
+}
+
+pub fn login_packet(android_id: &str, security_token: &str, persistent_ids: &[String]) -> Vec<u8> {
+    let hex = android_id.parse::<u64>().map(|v| format!("{v:x}")).unwrap_or_default();
+    let req = LoginRequest {
+        id: "chrome-63.0.3234.0".into(),
+        domain: "mcs.android.com".into(),
+        user: android_id.into(),
+        resource: android_id.into(),
+        auth_token: security_token.into(),
+        device_id: Some(format!("android-{hex}")),
+        setting: vec![Setting { name: "new_vc".into(), value: "1".into() }],
+        received_persistent_id: persistent_ids.to_vec(),
+        adaptive_heartbeat: Some(false),
+        use_rmq2: Some(true),
+        auth_service: Some(2),
+        network_type: Some(1),
+    };
+    let body = req.encode_to_vec();
+    let mut out = vec![MCS_VERSION, TAG_LOGIN_REQUEST];
+    varint(body.len(), &mut out);
+    out.extend(body);
+    out
+}
+
+pub fn packet(tag: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    varint(body.len(), &mut out);
+    out.extend_from_slice(body);
+    out
+}
+
+/// Входящее уведомление (данные приложения: ключ → значение).
+#[derive(Debug, Clone)]
+pub struct PushData {
+    pub persistent_id: Option<String>,
+    pub data: std::collections::HashMap<String, String>,
+}
+
+async fn read_varint<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<usize, FcmError> {
+    let mut shift = 0;
+    let mut v: usize = 0;
+    loop {
+        let b = r.read_u8().await?;
+        v |= ((b & 0x7f) as usize) << shift;
+        if b & 0x80 == 0 {
+            return Ok(v);
+        }
+        shift += 7;
+        if shift > 28 {
+            return Err(FcmError::Bad("длинный varint".into()));
+        }
+    }
+}
+
+pub enum McsEvent {
+    LoggedIn,
+    Data(PushData),
+}
+
+/// Подключается к MCS и вызывает `on_event` на вход/уведомления. Возвращается при разрыве.
+pub async fn listen<F>(creds: &FcmCredentials, persistent_ids: &[String], mut on_event: F) -> Result<(), FcmError>
+where
+    F: FnMut(McsEvent) + Send,
+{
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| FcmError::Bad(e.to_string()))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(cfg));
+    let tcp = tokio::time::timeout(Duration::from_secs(15), tokio::net::TcpStream::connect(("mtalk.google.com", 5228)))
+        .await
+        .map_err(|_| FcmError::Bad("таймаут подключения".into()))??;
+    let name = rustls::pki_types::ServerName::try_from("mtalk.google.com").map_err(|e| FcmError::Bad(e.to_string()))?;
+    let mut tls = connector.connect(name, tcp).await?;
+    tls.write_all(&login_packet(&creds.android_id, &creds.security_token, persistent_ids)).await?;
+    tls.flush().await?;
+    let version = tls.read_u8().await?;
+    if version < 38 {
+        return Err(FcmError::Bad(format!("версия MCS {version}")));
+    }
+    loop {
+        // сервер шлёт heartbeat-пинги; если долго тишина — переподключаемся
+        let tag = match tokio::time::timeout(Duration::from_secs(60 * 20), tls.read_u8()).await {
+            Ok(t) => t?,
+            Err(_) => return Err(FcmError::Bad("нет данных 20 минут".into())),
+        };
+        let size = read_varint(&mut tls).await?;
+        if size > 1 << 20 {
+            return Err(FcmError::Bad("слишком большое сообщение".into()));
+        }
+        let mut buf = vec![0u8; size];
+        tls.read_exact(&mut buf).await?;
+        match tag {
+            TAG_LOGIN_RESPONSE => {
+                let r = LoginResponse::decode(buf.as_slice())?;
+                if let Some(e) = r.error.filter(|e| e.code.unwrap_or(0) != 0) {
+                    return Err(FcmError::Bad(format!("вход MCS: {:?}", e.message)));
+                }
+                on_event(McsEvent::LoggedIn);
+            }
+            TAG_HEARTBEAT_PING => {
+                tls.write_all(&packet(TAG_HEARTBEAT_ACK, &HeartbeatAck::default().encode_to_vec())).await?;
+            }
+            TAG_CLOSE => return Err(FcmError::Bad("сервер закрыл соединение".into())),
+            TAG_DATA_MESSAGE => {
+                let m = DataMessageStanza::decode(buf.as_slice())?;
+                on_event(McsEvent::Data(PushData { persistent_id: m.persistent_id, data: m.app_data.into_iter().map(|a| (a.key, a.value)).collect() }));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Данные спаривания из уведомления Rust+ (channelId = pairing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pairing {
+    pub kind: String,
+    pub name: String,
+    pub ip: String,
+    pub port: u16,
+    pub player_id: u64,
+    pub player_token: i32,
+}
+
+pub fn parse_pairing(p: &PushData) -> Option<Pairing> {
+    if p.data.get("channelId").map(String::as_str) != Some("pairing") {
+        return None;
+    }
+    let body: serde_json::Value = serde_json::from_str(p.data.get("body")?).ok()?;
+    let num = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<i64>().ok()).or_else(|| v.as_i64());
+    Some(Pairing {
+        kind: body["type"].as_str().unwrap_or("server").to_string(),
+        name: crate::infrastructure::redact::sanitize_text(body["name"].as_str().unwrap_or("Сервер"), 120),
+        ip: body["ip"].as_str()?.trim().to_string(),
+        port: num(&body["port"])?.try_into().ok()?,
+        player_id: body["playerId"].as_str().and_then(|s| s.parse().ok()).or_else(|| body["playerId"].as_u64())?,
+        player_token: num(&body["playerToken"])?.try_into().ok()?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_packet_shape() {
+        let p = login_packet("1234567890", "987654321", &["0:1%abc".into()]);
+        assert_eq!(p[0], MCS_VERSION);
+        assert_eq!(p[1], TAG_LOGIN_REQUEST);
+        // varint длины + тело декодируется обратно
+        let len = p[2] as usize; // короткое тело < 128? иначе 2 байта
+        let (len, off) = if len & 0x80 == 0 { (len, 3) } else { ((len & 0x7f) | ((p[3] as usize) << 7), 4) };
+        let r = LoginRequest::decode(&p[off..off + len]).unwrap();
+        assert_eq!(r.device_id.as_deref(), Some("android-499602d2"));
+        assert_eq!(r.received_persistent_id, vec!["0:1%abc".to_string()]);
+    }
+
+    #[test]
+    fn pairing_notification_parsed() {
+        let mut data = std::collections::HashMap::new();
+        data.insert("channelId".into(), "pairing".into());
+        data.insert(
+            "body".into(),
+            r#"{"id":"x","name":"Test Server","desc":"","img":"","logo":"","url":"","ip":"203.0.113.5","port":"28082","type":"server","playerId":"76561197960287930","playerToken":"-1234567"}"#.into(),
+        );
+        let p = parse_pairing(&PushData { persistent_id: None, data }).unwrap();
+        assert_eq!(p.port, 28082);
+        assert_eq!(p.player_token, -1234567);
+        assert_eq!(p.player_id, 76561197960287930);
+        let mut other = std::collections::HashMap::new();
+        other.insert("channelId".into(), "alarm".into());
+        assert!(parse_pairing(&PushData { persistent_id: None, data: other }).is_none());
+    }
+
+    /// Живая проверка регистрации устройства и входа в MCS (сеть). Запуск: cargo test --lib live_fcm -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_fcm_register_and_login() {
+        let creds = register_device().await.expect("регистрация");
+        println!("android_id ok, fcm token len {}, expo {}", creds.fcm_token.len(), &creds.expo_token[..20.min(creds.expo_token.len())]);
+        let mut logged = false;
+        let r = tokio::time::timeout(
+            Duration::from_secs(20),
+            listen(&creds, &[], |e| {
+                if let McsEvent::LoggedIn = e {
+                    logged = true;
+                    println!("MCS: вход выполнен");
+                }
+            }),
+        )
+        .await;
+        println!("listen result (timeout ожидаем): {}", r.is_err());
+        assert!(logged || r.is_err());
+    }
+}

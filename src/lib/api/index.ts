@@ -35,6 +35,13 @@ export const api = {
   clanReport: (id: number, range: T.RangeSpec, timezone?: string) => call<T.ClanReport>("get_bm_clan_report", { id, range, timezone }),
   serverInsights: (id: string, days = 7) => call<T.ServerInsights>("get_server_insights", { id, days }),
   bmLinkCandidates: (steamId: string) => call<T.LinkCandidate[]>("get_bm_link_candidates", { steamId }),
+  rustplusStatus: () => call<T.RustPlusStatus>("rustplus_status"),
+  rustplusLogin: () => call<null>("rustplus_login"),
+  rustplusLogout: () => call<null>("rustplus_logout"),
+  rustplusUpdateServer: (id: string, enabled: boolean, deathAlertsChat: boolean, deathAlertsLocal: boolean) =>
+    call<null>("rustplus_update_server", { id, enabled, deathAlertsChat, deathAlertsLocal }),
+  rustplusRemoveServer: (id: string) => call<null>("rustplus_remove_server", { id }),
+  rustplusTestMessage: (id: string) => call<null>("rustplus_test_message", { id }),
   setFavorite: (steamId: string, favorite: boolean) => call<null>("set_favorite", { steamId, favorite }),
   setNotes: (steamId: string, notes: string | null) => call<null>("set_player_notes", { steamId, notes }),
   deletePlayer: (steamId: string) => call<null>("delete_player", { steamId }),

@@ -8,6 +8,7 @@ mod fixtures_export;
 pub mod infrastructure;
 pub mod persistence;
 pub mod providers;
+pub mod rustplus;
 pub mod services;
 pub mod state;
 pub mod tray;
@@ -43,6 +44,8 @@ pub fn run() {
             {
                 let _ = w.hide();
             }
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+            tauri::async_runtime::spawn(rustplus::service::start(app.handle().clone(), state.clone()));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(services::tracker_service::run_loop(state, move |ctx, ids| {
                 let h = handle.clone();
@@ -93,6 +96,12 @@ pub fn run() {
             commands::get_server_insights,
             commands::get_bm_link_candidates,
             commands::get_steam_friends,
+            commands::rustplus_status,
+            commands::rustplus_login,
+            commands::rustplus_logout,
+            commands::rustplus_update_server,
+            commands::rustplus_remove_server,
+            commands::rustplus_test_message,
             commands::set_favorite,
             commands::set_player_notes,
             commands::delete_player,
