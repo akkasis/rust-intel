@@ -383,21 +383,100 @@ pub struct Pairing {
 }
 
 pub fn parse_pairing(p: &PushData) -> Option<Pairing> {
-    let body: serde_json::Value = serde_json::from_str(p.data.get("body")?).ok()?;
+    parse_pairing_detailed(p).ok()
+}
+
+/// Экранирует сырые управляющие символы внутри JSON-строк (серверные описания иногда содержат
+/// настоящие переводы строк/табы — строгий JSON их не допускает).
+fn escape_raw_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_str = false;
+    let mut esc = false;
+    for c in s.chars() {
+        if in_str {
+            if esc {
+                esc = false;
+                out.push(c);
+                continue;
+            }
+            match c {
+                '\\' => {
+                    esc = true;
+                    out.push(c);
+                }
+                '"' => {
+                    in_str = false;
+                    out.push(c);
+                }
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push(' '),
+                c => out.push(c),
+            }
+        } else {
+            if c == '"' {
+                in_str = true;
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Значение поля как текст: строка или число (в т.ч. дробное/большое — без потери точности для целых).
+fn field_text(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.trim().to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Разбор с точной причиной отказа (для журнала).
+pub fn parse_pairing_detailed(p: &PushData) -> Result<Pairing, String> {
+    let raw = p.data.get("body").ok_or("нет поля body")?;
+    let body: serde_json::Value =
+        serde_json::from_str(raw).or_else(|_| serde_json::from_str(&escape_raw_controls(raw))).map_err(|e| format!("body не JSON: {e}"))?;
+    // иногда данные вложены ещё одним слоем ("data" / строка JSON)
+    let body = match (&body["ip"], &body["data"]) {
+        (serde_json::Value::Null, serde_json::Value::Object(_)) => body["data"].clone(),
+        (serde_json::Value::Null, serde_json::Value::String(s)) => serde_json::from_str(s).unwrap_or(body),
+        _ => body,
+    };
     let is_pairing = p.data.get("channelId").map(String::as_str) == Some("pairing")
         || p.data.get("gcm.notification.android_channel_id").map(String::as_str) == Some("pairing")
         || (body.get("playerToken").is_some() && body.get("ip").is_some());
     if !is_pairing {
-        return None;
+        return Err("не спаривание".into());
     }
-    let num = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<i64>().ok()).or_else(|| v.as_i64());
-    Some(Pairing {
-        kind: body["type"].as_str().unwrap_or("server").to_string(),
+    let ip = field_text(&body["ip"]).filter(|s| !s.is_empty()).ok_or("нет ip")?;
+    let port_s = field_text(&body["port"]).ok_or("нет port")?;
+    let port: u16 = port_s.parse::<f64>().ok().filter(|v| *v >= 1.0 && *v <= 65535.0).map(|v| v as u16).ok_or(format!("плохой port «{port_s}»"))?;
+    let pid_s = field_text(&body["playerId"]).ok_or("нет playerId")?;
+    let player_id: u64 = pid_s.parse().map_err(|_| format!("плохой playerId «{pid_s}»"))?;
+    let tok_s = field_text(&body["playerToken"]).ok_or("нет playerToken")?;
+    // playerToken — int32 в протоколе; встречается и как беззнаковое 32-битное число
+    let player_token: i32 = tok_s
+        .parse::<i64>()
+        .ok()
+        .and_then(|v| {
+            if (i32::MIN as i64..=i32::MAX as i64).contains(&v) {
+                Some(v as i32)
+            } else if (0..=u32::MAX as i64).contains(&v) {
+                Some(v as u32 as i32)
+            } else {
+                None
+            }
+        })
+        .ok_or("плохой playerToken")?;
+    Ok(Pairing {
+        kind: field_text(&body["type"]).unwrap_or_else(|| "server".into()),
         name: crate::infrastructure::redact::sanitize_text(body["name"].as_str().unwrap_or("Сервер"), 120),
-        ip: body["ip"].as_str()?.trim().to_string(),
-        port: num(&body["port"])?.try_into().ok()?,
-        player_id: body["playerId"].as_str().and_then(|s| s.parse().ok()).or_else(|| body["playerId"].as_u64())?,
-        player_token: num(&body["playerToken"])?.try_into().ok()?,
+        ip,
+        port,
+        player_id,
+        player_token,
     })
 }
 
@@ -416,6 +495,28 @@ mod tests {
         let r = LoginRequest::decode(&p[off..off + len]).unwrap();
         assert_eq!(r.device_id.as_deref(), Some("android-499602d2"));
         assert_eq!(r.received_persistent_id, vec!["0:1%abc".to_string()]);
+    }
+
+    #[test]
+    fn pairing_rustoria_like_variants() {
+        let mk = |body: &str| {
+            let mut data = std::collections::HashMap::new();
+            data.insert("channelId".into(), "pairing".into());
+            data.insert("body".into(), body.to_string());
+            PushData { persistent_id: None, data }
+        };
+        // реальные переводы строк в описании + числа вместо строк + токен как беззнаковое
+        let raw = "{\"id\":\"2ae66e35\",\"name\":\"Rustoria.co - EU East Medium\",\"desc\":\"Wipe Schedule:\n\tMap - Bi-Weekly\",\"img\":\"\",\"logo\":\"\",\"url\":\"https://rustoria.co\",\"ip\":\"185.206.151.10\",\"port\":28083,\"type\":\"server\",\"playerId\":\"76561197960287930\",\"playerToken\":3000000000}";
+        let p = parse_pairing_detailed(&mk(raw)).unwrap();
+        assert_eq!(p.ip, "185.206.151.10");
+        assert_eq!(p.port, 28083);
+        assert_eq!(p.player_token, 3000000000u32 as i32);
+        // экранированные \\n и строки
+        let esc = r#"{"name":"S","desc":"a\\n\\tb","ip":"1.2.3.4","port":"28082","type":"server","playerId":"76561197960287930","playerToken":"-5"}"#;
+        assert_eq!(parse_pairing_detailed(&mk(esc)).unwrap().player_token, -5);
+        // понятная причина при отсутствии поля
+        let bad = r#"{"name":"S","ip":"1.2.3.4","type":"server","playerId":"76561197960287930","playerToken":"1"}"#;
+        assert_eq!(parse_pairing_detailed(&mk(bad)).unwrap_err(), "нет port");
     }
 
     #[test]

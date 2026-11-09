@@ -81,6 +81,12 @@ pub struct Diag {
     pub facepunch_error: Option<String>,
 }
 
+/// Для журнала: вырезаем значение playerToken (это секрет), остальное оставляем для диагностики.
+fn redact_token(body: &str) -> String {
+    let re = regex::Regex::new(r#"("playerToken"\s*:\s*)("?)[-0-9]+("?)"#).expect("regex");
+    re.replace_all(body, "$1$2***$3").chars().take(1500).collect()
+}
+
 async fn push_log(channel: Option<String>, title: Option<String>, result: String) {
     let mut l = PUSH_LOG.write().await;
     l.insert(0, PushLogEntry { at: fmt_ts(now()), channel, title, result });
@@ -332,23 +338,20 @@ async fn listener_loop(app: AppHandle, state: Arc<AppState>) {
                     let _ = app.emit("rid://rustplus", None::<String>);
                     continue;
                 }
-                let result = match fcm::parse_pairing(&d) {
-                    Some(pair) if pair.kind == "server" => match on_paired(app.clone(), state.clone(), pair.clone()).await {
+                let result = match fcm::parse_pairing_detailed(&d) {
+                    Ok(pair) if pair.kind == "server" => match on_paired(app.clone(), state.clone(), pair.clone()).await {
                         Ok(()) => format!("сервер «{}» добавлен", pair.name),
                         Err(e) => {
                             tracing::warn!(error = %e, "Rust+: не удалось сохранить спаривание");
                             format!("ошибка сохранения сервера: {e}")
                         }
                     },
-                    Some(pair) => format!("спаривание устройства ({}) — не поддерживается, нужен «Pair with server»", pair.kind),
-                    None if channel.as_deref() == Some("pairing") => {
-                        let keys: Vec<&String> = d.data.keys().collect();
-                        format!(
-                            "не удалось разобрать спаривание; поля: {keys:?}; body: {}",
-                            d.data.get("body").map(|b| b.chars().take(160).collect::<String>()).unwrap_or_default()
-                        )
+                    Ok(pair) => format!("спаривание устройства ({}) — не поддерживается, нужен «Pair with server»", pair.kind),
+                    Err(reason) if reason != "не спаривание" => {
+                        let body = d.data.get("body").map(|b| redact_token(b)).unwrap_or_default();
+                        format!("не удалось разобрать спаривание: {reason}. body: {body}")
                     }
-                    None => "другое уведомление (не спаривание)".into(),
+                    Err(_) => "другое уведомление (не спаривание)".into(),
                 };
                 push_log(channel, title, result).await;
                 let _ = app.emit("rid://rustplus", None::<String>);
@@ -571,6 +574,13 @@ async fn handle_death(app: &AppHandle, state: &Arc<AppState>, row: &ServerRow, s
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn token_redacted_in_log() {
+        let b = super::redact_token(r#"{"ip":"1.2.3.4","playerToken":"-12345","port":1}"#);
+        assert!(b.contains("\"playerToken\":\"***\""), "{b}");
+        assert!(!super::redact_token(r#"{"playerToken":987654}"#).contains("987654"));
+    }
+
     #[test]
     fn token_account_is_safe() {
         assert_eq!(super::token_account("203.0.113.5:28082"), "rustplus_token_203_0_113_5_28082");
