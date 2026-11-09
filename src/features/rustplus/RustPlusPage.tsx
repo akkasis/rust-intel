@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { CheckCircle2, Circle, Loader2, LogIn, MessageSquare, Skull, Trash2, Wifi, WifiOff } from "lucide-react";
 import { api } from "@/lib/api";
 import { listen } from "@/lib/api/transport";
-import type { RustPlusServer } from "@/lib/types";
+import type { RustPlusServer, RustPlusStatus } from "@/lib/types";
 import { fmtRelative } from "@/lib/format";
 import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, LoadingBlock, Notice, PageHeader, StateDot, Switch, cn } from "@/components/ui";
 
@@ -82,6 +82,7 @@ export function RustPlusPage() {
           />
         </ol>
       </Card>
+      {linked && <Diagnostics s={s} />}
       {s.servers.length === 0 ? (
         <Card>
           <EmptyState icon={<MessageSquare className="size-7" />} title="Серверов пока нет" text="После шагов 1–3 нажмите «Pair with server» в игре." />
@@ -168,6 +169,79 @@ function ServerCard({ s, demo }: { s: RustPlusServer; demo: boolean }) {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function Diagnostics({ s }: { s: RustPlusStatus }) {
+  const qc = useQueryClient();
+  const selftest = useMutation({
+    mutationFn: api.rustplusSelfTest,
+    onSuccess: () => toast.info("Тестовое уведомление отправлено — ждём его в течение ~30 секунд"),
+    onError: (e) => toast.error(e.message),
+  });
+  const rereg = useMutation({
+    mutationFn: api.rustplusReregister,
+    onSuccess: () => (toast.success("Устройство заново зарегистрировано в Facepunch — нажмите «Pair with server» ещё раз"), qc.invalidateQueries({ queryKey: ["rustplus"] })),
+    onError: (e) => toast.error(e.message),
+  });
+  const st = s.selftest;
+  const waiting = st && !st[1] && Date.now() - new Date(st[0]).getTime() < 60_000;
+  const failed = st && !st[1] && !waiting;
+  return (
+    <Card>
+      <CardHeader
+        title="Диагностика уведомлений"
+        subtitle="Если сервер не появляется после «Pair with server» — проверьте доставку и перерегистрируйтесь"
+        actions={
+          <>
+            <Button size="sm" onClick={() => selftest.mutate()} loading={selftest.isPending}>
+              Проверить доставку
+            </Button>
+            <Button size="sm" onClick={() => rereg.mutate()} loading={rereg.isPending}>
+              Перерегистрировать в Facepunch
+            </Button>
+          </>
+        }
+      />
+      <div className="grid gap-4 p-4 text-[13px] lg:grid-cols-[300px_minmax(0,1fr)]">
+        <dl className="space-y-1.5 text-xs">
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Самопроверка</dt>
+            <dd>{!st ? "не запускалась" : st[1] ? <Badge tone="teal">доставка работает</Badge> : waiting ? <Badge tone="amber">ждём…</Badge> : <Badge tone="danger">не дошло</Badge>}</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Регистрация в Facepunch</dt>
+            <dd>{s.diag.facepunch_error ? <span className="text-danger">{s.diag.facepunch_error}</span> : s.diag.facepunch_registered_at ? fmtRelative(s.diag.facepunch_registered_at) : "—"}</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Вход в поток уведомлений</dt>
+            <dd>{s.diag.last_login_at ? fmtRelative(s.diag.last_login_at) : "—"}</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Переподключений</dt>
+            <dd className="num">{s.diag.reconnects}</dd>
+          </div>
+          {s.diag.last_error && <div className="text-amber">Последняя ошибка: {s.diag.last_error}</div>}
+          {failed && <Notice tone="error">Тестовое уведомление не дошло — перезапустите программу. Если не поможет, нажмите «Отключить Rust+» и подключитесь заново.</Notice>}
+        </dl>
+        <div>
+          <div className="mb-1 text-[11px] font-medium tracking-wide text-faint uppercase">Последние уведомления</div>
+          {s.push_log.length === 0 ? (
+            <div className="text-xs text-muted">Пока ничего не приходило. Нажмите «Pair with server» в игре — запись появится здесь, даже если что-то пойдёт не так.</div>
+          ) : (
+            <ul className="divide-y divide-line">
+              {s.push_log.map((p, i) => (
+                <li key={i} className="py-1.5 text-xs">
+                  <span className="text-faint num">{fmtRelative(p.at)}</span> · <span className="text-muted">{p.channel ?? "—"}</span>
+                  {p.title && <span className="text-muted"> · {p.title}</span>}
+                  <div>{p.result}</div>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       </div>

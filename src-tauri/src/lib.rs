@@ -102,6 +102,8 @@ pub fn run() {
             commands::rustplus_update_server,
             commands::rustplus_remove_server,
             commands::rustplus_test_message,
+            commands::rustplus_self_test,
+            commands::rustplus_reregister,
             commands::set_favorite,
             commands::set_player_notes,
             commands::delete_player,

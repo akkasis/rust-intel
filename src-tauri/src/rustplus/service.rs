@@ -58,6 +58,34 @@ struct Runtime {
 static RUNTIME: LazyLock<Mutex<Runtime>> = LazyLock::new(Default::default);
 static STATUS: LazyLock<RwLock<HashMap<String, ServerStatus>>> = LazyLock::new(Default::default);
 static LISTENER: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new("off".into()));
+static PUSH_LOG: LazyLock<RwLock<Vec<PushLogEntry>>> = LazyLock::new(Default::default);
+static DIAG: LazyLock<RwLock<Diag>> = LazyLock::new(Default::default);
+/// (отправлено_в, получено_в)
+type SelfTest = Option<(String, Option<String>)>;
+static SELFTEST: LazyLock<RwLock<SelfTest>> = LazyLock::new(Default::default);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PushLogEntry {
+    pub at: String,
+    pub channel: Option<String>,
+    pub title: Option<String>,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct Diag {
+    pub last_login_at: Option<String>,
+    pub last_error: Option<String>,
+    pub reconnects: u32,
+    pub facepunch_registered_at: Option<String>,
+    pub facepunch_error: Option<String>,
+}
+
+async fn push_log(channel: Option<String>, title: Option<String>, result: String) {
+    let mut l = PUSH_LOG.write().await;
+    l.insert(0, PushLogEntry { at: fmt_ts(now()), channel, title, result });
+    l.truncate(15);
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ServerRow {
@@ -89,6 +117,10 @@ pub struct RustPlusStatus {
     pub listener: String,
     pub servers: Vec<ServerView>,
     pub demo: bool,
+    pub push_log: Vec<PushLogEntry>,
+    pub diag: Diag,
+    /// (отправлено_в, получено_в)
+    pub selftest: Option<(String, Option<String>)>,
 }
 
 fn creds(state: &AppState) -> Option<FcmCredentials> {
@@ -120,6 +152,9 @@ pub async fn status(state: &AppState) -> RustPlusStatus {
         listener: LISTENER.read().await.clone(),
         servers: rows.into_iter().map(|r| ServerView { status: st.get(&r.id).cloned().unwrap_or_default(), row: r }).collect(),
         demo,
+        push_log: PUSH_LOG.read().await.clone(),
+        diag: DIAG.read().await.clone(),
+        selftest: SELFTEST.read().await.clone(),
     }
 }
 
@@ -211,8 +246,40 @@ async fn start_listener(app: AppHandle, state: Arc<AppState>) {
     rt.fcm_task = Some(tauri::async_runtime::spawn(listener_loop(app, state)));
 }
 
+/// Повторная регистрация устройства в Facepunch (регистрация может истекать). Делается при каждом запуске слушателя.
+pub async fn reregister(state: &AppState) -> Result<(), String> {
+    let (Some(c), Some(a)) = (creds(state), auth(state)) else { return Err("сначала войдите через Steam".into()) };
+    match fcm::register_with_facepunch(&a.token, &c.expo_token).await {
+        Ok(()) => {
+            let mut d = DIAG.write().await;
+            d.facepunch_registered_at = Some(fmt_ts(now()));
+            d.facepunch_error = None;
+            Ok(())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            DIAG.write().await.facepunch_error = Some(msg.clone());
+            Err(msg)
+        }
+    }
+}
+
+/// Самопроверка доставки: отправить себе уведомление и ждать его в потоке.
+pub async fn self_test(state: &AppState) -> Result<(), String> {
+    let c = creds(state).ok_or("устройство не зарегистрировано")?;
+    let nonce = uuid::Uuid::new_v4().to_string();
+    *SELFTEST.write().await = Some((fmt_ts(now()), None));
+    SELFTEST_NONCE.write().await.replace(nonce.clone());
+    fcm::send_self_test(&c.expo_token, &nonce).await.map_err(|e| e.to_string())
+}
+
+static SELFTEST_NONCE: LazyLock<RwLock<Option<String>>> = LazyLock::new(Default::default);
+
 async fn listener_loop(app: AppHandle, state: Arc<AppState>) {
     let mut backoff = 2u64;
+    if let Err(e) = reregister(&state).await {
+        tracing::warn!(error = %e, "Rust+: повторная регистрация в Facepunch не удалась");
+    }
     loop {
         let Some(c) = creds(&state) else { return };
         *LISTENER.write().await = "connecting".into();
@@ -233,6 +300,7 @@ async fn listener_loop(app: AppHandle, state: Arc<AppState>) {
             while let Some(d) = rx.recv().await {
                 if d.data.contains_key("__login") {
                     *LISTENER.write().await = "connected".into();
+                    DIAG.write().await.last_login_at = Some(fmt_ts(now()));
                     let _ = app.emit("rid://rustplus", None::<String>);
                     continue;
                 }
@@ -248,19 +316,51 @@ async fn listener_loop(app: AppHandle, state: Arc<AppState>) {
                     }
                     let _ = repo::set_setting(&p, "rustplus_persistent_ids", &serde_json::to_string(&ids).unwrap_or_default()).await;
                 }
-                if let Some(pair) = fcm::parse_pairing(&d)
-                    && pair.kind == "server"
-                {
-                    if let Err(e) = on_paired(app.clone(), state.clone(), pair).await {
-                        tracing::warn!(error = %e, "Rust+: не удалось сохранить спаривание");
+                let channel = d.data.get("channelId").cloned();
+                let title = d.data.get("title").cloned();
+                if let Some(nonce) = d.data.get("rid_selftest").cloned().or_else(|| {
+                    d.data
+                        .get("body")
+                        .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+                        .and_then(|v| v["rid_selftest"].as_str().map(str::to_string))
+                }) {
+                    let ok = SELFTEST_NONCE.read().await.as_deref() == Some(nonce.as_str());
+                    if ok && let Some(st) = SELFTEST.write().await.as_mut() {
+                        st.1 = Some(fmt_ts(now()));
                     }
+                    push_log(channel, title, "самопроверка: доставка работает".into()).await;
+                    let _ = app.emit("rid://rustplus", None::<String>);
+                    continue;
                 }
+                let result = match fcm::parse_pairing(&d) {
+                    Some(pair) if pair.kind == "server" => match on_paired(app.clone(), state.clone(), pair.clone()).await {
+                        Ok(()) => format!("сервер «{}» добавлен", pair.name),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Rust+: не удалось сохранить спаривание");
+                            format!("ошибка сохранения сервера: {e}")
+                        }
+                    },
+                    Some(pair) => format!("спаривание устройства ({}) — не поддерживается, нужен «Pair with server»", pair.kind),
+                    None if channel.as_deref() == Some("pairing") => {
+                        let keys: Vec<&String> = d.data.keys().collect();
+                        format!(
+                            "не удалось разобрать спаривание; поля: {keys:?}; body: {}",
+                            d.data.get("body").map(|b| b.chars().take(160).collect::<String>()).unwrap_or_default()
+                        )
+                    }
+                    None => "другое уведомление (не спаривание)".into(),
+                };
+                push_log(channel, title, result).await;
+                let _ = app.emit("rid://rustplus", None::<String>);
             }
         };
         tokio::select! {
             r = listen => {
                 if let Err(e) = r {
                     tracing::warn!(error = %e, "Rust+: поток уведомлений прерван");
+                    let mut d = DIAG.write().await;
+                    d.last_error = Some(e.to_string());
+                    d.reconnects += 1;
                 }
             }
             _ = handler => {}

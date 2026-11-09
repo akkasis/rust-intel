@@ -41,6 +41,8 @@ export const api = {
   rustplusUpdateServer: (id: string, enabled: boolean, deathAlertsChat: boolean, deathAlertsLocal: boolean) =>
     call<null>("rustplus_update_server", { id, enabled, deathAlertsChat, deathAlertsLocal }),
   rustplusRemoveServer: (id: string) => call<null>("rustplus_remove_server", { id }),
+  rustplusSelfTest: () => call<null>("rustplus_self_test"),
+  rustplusReregister: () => call<null>("rustplus_reregister"),
   rustplusTestMessage: (id: string) => call<null>("rustplus_test_message", { id }),
   setFavorite: (steamId: string, favorite: boolean) => call<null>("set_favorite", { steamId, favorite }),
   setNotes: (steamId: string, notes: string | null) => call<null>("set_player_notes", { steamId, notes }),

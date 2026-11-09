@@ -146,6 +146,9 @@ export async function mockInvoke(cmd: string, args: Args): Promise<unknown> {
         steam_id: null,
         listener: "off",
         demo: true,
+        push_log: [],
+        diag: { last_login_at: null, last_error: null, reconnects: 0, facepunch_registered_at: null, facepunch_error: null },
+        selftest: null,
         servers: [
           {
             id: "198.51.100.1:28082",

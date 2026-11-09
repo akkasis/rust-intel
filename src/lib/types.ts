@@ -751,4 +751,7 @@ export interface RustPlusStatus {
   listener: "off" | "connecting" | "connected" | "reconnecting" | string;
   servers: RustPlusServer[];
   demo: boolean;
+  push_log: { at: Iso; channel: string | null; title: string | null; result: string }[];
+  diag: { last_login_at: Iso | null; last_error: string | null; reconnects: number; facepunch_registered_at: Iso | null; facepunch_error: string | null };
+  selftest: [Iso, Iso | null] | null;
 }

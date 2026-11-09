@@ -1,6 +1,6 @@
 [package]
 name = "rust-intel-desktop"
-version = "0.6.0"
+version = "0.6.1"
 description = "Rust Intelligence Desktop — локальный анализ публичной игровой активности Rust"
 authors = ["RID contributors"]
 edition = "2024"

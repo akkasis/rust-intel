@@ -54,15 +54,27 @@ fn h(e: reqwest::Error) -> FcmError {
     FcmError::Http(crate::infrastructure::redact::redact(&e.to_string()))
 }
 
-/// Android checkin → (android_id, security_token).
+/// Android checkin → (android_id, security_token). Новая регистрация.
 pub async fn checkin() -> Result<(u64, u64), FcmError> {
+    checkin_with(None).await
+}
+
+/// Повторный checkin уже выданного устройства — обязателен перед каждым подключением к MCS
+/// (так делает push-receiver; без него вход проходит, но сообщения могут не доставляться).
+pub async fn checkin_existing(android_id: &str, security_token: &str) -> Result<(u64, u64), FcmError> {
+    let id: u64 = android_id.parse().map_err(|_| FcmError::Bad("android_id".into()))?;
+    let tok: u64 = security_token.parse().map_err(|_| FcmError::Bad("security_token".into()))?;
+    checkin_with(Some((id, tok))).await
+}
+
+async fn checkin_with(existing: Option<(u64, u64)>) -> Result<(u64, u64), FcmError> {
     let req = AndroidCheckinRequest {
-        id: None,
+        id: existing.map(|e| e.0 as i64),
         checkin: AndroidCheckinProto {
             r#type: Some(3), // DEVICE_CHROME_BROWSER
             chrome_build: Some(ChromeBuildProto { platform: Some(2), chrome_version: Some("63.0.3234.0".into()), channel: Some(1) }),
         },
-        security_token: None,
+        security_token: existing.map(|e| e.1),
         version: Some(3),
         user_serial_number: Some(0),
     };
@@ -198,6 +210,24 @@ pub async fn register_device() -> Result<FcmCredentials, FcmError> {
     Ok(FcmCredentials { android_id: android_id.to_string(), security_token: security_token.to_string(), fcm_token, expo_token: expo })
 }
 
+/// Тестовое уведомление самому себе через Expo — тем же маршрутом, которым Facepunch шлёт спаривание.
+pub async fn send_self_test(expo_token: &str, nonce: &str) -> Result<(), FcmError> {
+    let v: serde_json::Value = http()
+        .post("https://exp.host/--/api/v2/push/send")
+        .json(&serde_json::json!({"to": expo_token, "title": "RID", "body": "self-test", "channelId": "rid-selftest", "data": {"rid_selftest": nonce}}))
+        .send()
+        .await
+        .map_err(h)?
+        .json()
+        .await
+        .map_err(h)?;
+    if v["data"]["status"].as_str() == Some("ok") {
+        Ok(())
+    } else {
+        Err(FcmError::Bad(format!("Expo: {}", v.to_string().chars().take(200).collect::<String>())))
+    }
+}
+
 /// Регистрирует устройство в Facepunch для аккаунта Steam (AuthToken со страницы входа Rust+).
 pub async fn register_with_facepunch(auth_token: &str, expo_token: &str) -> Result<(), FcmError> {
     let r = http()
@@ -288,6 +318,7 @@ pub async fn listen<F>(creds: &FcmCredentials, persistent_ids: &[String], mut on
 where
     F: FnMut(McsEvent) + Send,
 {
+    checkin_existing(&creds.android_id, &creds.security_token).await?;
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
@@ -352,10 +383,13 @@ pub struct Pairing {
 }
 
 pub fn parse_pairing(p: &PushData) -> Option<Pairing> {
-    if p.data.get("channelId").map(String::as_str) != Some("pairing") {
+    let body: serde_json::Value = serde_json::from_str(p.data.get("body")?).ok()?;
+    let is_pairing = p.data.get("channelId").map(String::as_str) == Some("pairing")
+        || p.data.get("gcm.notification.android_channel_id").map(String::as_str) == Some("pairing")
+        || (body.get("playerToken").is_some() && body.get("ip").is_some());
+    if !is_pairing {
         return None;
     }
-    let body: serde_json::Value = serde_json::from_str(p.data.get("body")?).ok()?;
     let num = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<i64>().ok()).or_else(|| v.as_i64());
     Some(Pairing {
         kind: body["type"].as_str().unwrap_or("server").to_string(),
@@ -399,6 +433,50 @@ mod tests {
         let mut other = std::collections::HashMap::new();
         other.insert("channelId".into(), "alarm".into());
         assert!(parse_pairing(&PushData { persistent_id: None, data: other }).is_none());
+    }
+
+    /// Живая проверка доставки: регистрация → MCS → push самому себе через Expo (маршрут Facepunch).
+    /// Запуск: cargo test --lib live_push_roundtrip -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_push_roundtrip() {
+        let creds = register_device().await.expect("регистрация");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let c2 = creds.clone();
+        let task = tokio::spawn(async move {
+            let _ = listen(&c2, &[], move |e| {
+                let _ = tx.send(match e {
+                    McsEvent::LoggedIn => None,
+                    McsEvent::Data(d) => Some(d),
+                });
+            })
+            .await;
+        });
+        // ждём вход
+        let first = tokio::time::timeout(Duration::from_secs(20), rx.recv()).await.expect("вход MCS");
+        assert!(first.unwrap().is_none());
+        let body = serde_json::json!({"ip":"203.0.113.5","port":"28082","name":"Test","type":"server","playerId":"76561197960287930","playerToken":"-1"});
+        let r: serde_json::Value = http()
+            .post("https://exp.host/--/api/v2/push/send")
+            .json(&serde_json::json!({"to": creds.expo_token, "title": "Test", "body": "pair", "channelId": "pairing", "data": body}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        println!("expo send: {r}");
+        match tokio::time::timeout(Duration::from_secs(40), rx.recv()).await {
+            Ok(Some(Some(d))) => {
+                println!("ПОЛУЧЕНО: {:?}", d.data.keys().collect::<Vec<_>>());
+                for (k, v) in &d.data {
+                    println!("  {k} = {}", v.chars().take(200).collect::<String>());
+                }
+                println!("parse_pairing: {:?}", parse_pairing(&d));
+            }
+            other => println!("НЕ ПОЛУЧЕНО: {other:?}"),
+        }
+        task.abort();
     }
 
     /// Живая проверка регистрации устройства и входа в MCS (сеть). Запуск: cargo test --lib live_fcm -- --ignored --nocapture

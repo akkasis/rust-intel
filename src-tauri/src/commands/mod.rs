@@ -334,6 +334,16 @@ pub async fn rustplus_remove_server(state: St<'_>, id: String) -> AppResult<()> 
 }
 
 #[tauri::command]
+pub async fn rustplus_self_test(state: St<'_>) -> AppResult<()> {
+    crate::rustplus::service::self_test(&state).await.map_err(AppError::validation)
+}
+
+#[tauri::command]
+pub async fn rustplus_reregister(state: St<'_>) -> AppResult<()> {
+    crate::rustplus::service::reregister(&state).await.map_err(AppError::validation)
+}
+
+#[tauri::command]
 pub async fn rustplus_test_message(id: String) -> AppResult<()> {
     crate::rustplus::service::send_chat(&id, "RID: проверка связи ✔").await.map_err(AppError::validation)
 }
